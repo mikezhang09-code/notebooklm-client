@@ -16,7 +16,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "postinstall": "node scripts/setup-curl.mjs || true",
+    "postinstall": "node scripts/setup-curl.mjs || exit 0",
     "setup": "node scripts/setup-curl.mjs --force",
     "prepublishOnly": "tsc",
     "build": "tsc",

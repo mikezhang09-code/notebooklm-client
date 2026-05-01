@@ -102,7 +102,7 @@ function downloadAndExtract(url, info) {
 
   console.log("[setup] Extracting...");
   if (process.platform === "win32") {
-    execSync(`tar xzf "${archive.replaceAll("\\", "/")}" --force-local -C "${tmpDir.replaceAll("\\", "/")}"`, { stdio: "inherit" });
+    execSync(`tar xzf "${archive.replaceAll("\\", "/")}" -C "${tmpDir.replaceAll("\\", "/")}"`, { stdio: "inherit" });
   } else {
     execSync(`tar xzf "${archive}" -C "${tmpDir}"`, { stdio: "inherit" });
   }
