@@ -24,26 +24,52 @@ export interface TlsClientTransportOptions {
   onSessionExpired?: () => Promise<NotebookRpcSession>;
 }
 
-// Lazy-loaded module references (optional dependency)
-interface TlsClientModule {
+// Lazy-loaded module references (optional dependency).
+//
+// Two API shapes are supported:
+//   - Legacy (≤1.0.2, unpublished): named exports `ModuleClient` + `SessionClient`.
+//   - Current (1.0.3+): default export `TlsClient` (single combined class).
+interface LegacyModule {
   ModuleClient: new (opts: { maxThreads?: number }) => ModuleClientInstance;
   SessionClient: new (module: ModuleClientInstance, opts: Record<string, unknown>) => SessionClientInstance;
 }
+
+interface CurrentModule {
+  default: new (opts: Record<string, unknown>) => SessionClientInstance;
+}
+
+type TlsClientModule = LegacyModule | CurrentModule;
 
 interface ModuleClientInstance {
   terminate(): Promise<void>;
 }
 
+/**
+ * Common session-client surface used by both API shapes. `terminate` is present
+ * on 1.0.3+; `destroySession` is the legacy name. One or both may exist.
+ */
 interface SessionClientInstance {
   post(url: string, body: string, opts?: Record<string, unknown>): Promise<TlsClientResponse>;
   get(url: string, opts?: Record<string, unknown>): Promise<TlsClientResponse>;
-  destroySession(): Promise<void>;
+  destroySession?(): Promise<void>;
+  terminate?(): Promise<void> | void;
 }
 
 interface TlsClientResponse {
   status: number;
   body: string;
-  headers: Record<string, string[]>;
+  headers?: Record<string, string[] | string>;
+}
+
+function isLegacyModule(mod: TlsClientModule): mod is LegacyModule {
+  return (
+    typeof (mod as LegacyModule).ModuleClient === 'function' &&
+    typeof (mod as LegacyModule).SessionClient === 'function'
+  );
+}
+
+function isCurrentModule(mod: TlsClientModule): mod is CurrentModule {
+  return typeof (mod as CurrentModule).default === 'function';
 }
 
 export class TlsClientTransport implements Transport {
@@ -65,8 +91,7 @@ export class TlsClientTransport implements Transport {
     const mod = await TlsClientTransport.loadModule();
     if (!mod) throw new Error('tlsclientwrapper not installed. Run: npm install tlsclientwrapper');
 
-    this.moduleClient = new mod.ModuleClient({ maxThreads: 2 });
-    this.sessionClient = new mod.SessionClient(this.moduleClient, {
+    const clientOptions: Record<string, unknown> = {
       tlsClientIdentifier: this.profile,
       timeoutSeconds: 60,
       ...(this.proxy ? { proxyUrl: this.proxy } : {}),
@@ -87,7 +112,16 @@ export class TlsClientTransport implements Transport {
         'sec-fetch-site',
         'x-same-domain',
       ],
-    });
+    };
+
+    if (isLegacyModule(mod)) {
+      this.moduleClient = new mod.ModuleClient({ maxThreads: 2 });
+      this.sessionClient = new mod.SessionClient(this.moduleClient, clientOptions);
+    } else if (isCurrentModule(mod)) {
+      this.sessionClient = new mod.default(clientOptions);
+    } else {
+      throw new Error('tlsclientwrapper module shape not recognised');
+    }
   }
 
   async execute(req: TransportRequest): Promise<string> {
@@ -139,7 +173,13 @@ export class TlsClientTransport implements Transport {
 
   async dispose(): Promise<void> {
     if (this.sessionClient) {
-      try { await this.sessionClient.destroySession(); } catch { /* ignore */ }
+      try {
+        if (typeof this.sessionClient.destroySession === 'function') {
+          await this.sessionClient.destroySession();
+        } else if (typeof this.sessionClient.terminate === 'function') {
+          await this.sessionClient.terminate();
+        }
+      } catch { /* ignore */ }
       this.sessionClient = null;
     }
     if (this.moduleClient) {
@@ -175,19 +215,16 @@ export class TlsClientTransport implements Transport {
 
   // ── Static Detection ──
 
-  /** Check if tlsclientwrapper package is installed with the expected API. */
+  /** Check if tlsclientwrapper package is installed with a supported API. */
   static async isAvailable(): Promise<boolean> {
     const mod = await TlsClientTransport.loadModule();
     if (!mod) return false;
-    // v1.0.x exposed ModuleClient + SessionClient. v1.4+ replaced them with a
-    // single default `TlsClient` class, which this transport does not support.
-    // Verify the expected API shape so auto-detection falls through to http.
-    return typeof mod.ModuleClient === 'function' && typeof mod.SessionClient === 'function';
+    return isLegacyModule(mod) || isCurrentModule(mod);
   }
 
   private static async loadModule(): Promise<TlsClientModule | null> {
     try {
-      const mod = await import('tlsclientwrapper') as TlsClientModule;
+      const mod = (await import('tlsclientwrapper')) as TlsClientModule;
       return mod;
     } catch {
       return null;

@@ -16,7 +16,18 @@
  */
 
 export { NotebookClient } from './client.js';
-export type { TransportMode, ConnectOptions } from './client.js';
+export type { TransportMode, ConnectOptions, DownloadArtifactResult } from './client.js';
+
+// Artifact download helpers (low-level — most users want
+// `client.runAudio()`/etc. or `client.downloadArtifact()` instead).
+export {
+  downloadFileHttp,
+  saveReport,
+  saveQuizHtml,
+  saveSlideDeck,
+  saveInfographic,
+  saveDataTable,
+} from './download.js';
 
 // Transport layer
 export type { Transport, TransportRequest } from './transport.js';

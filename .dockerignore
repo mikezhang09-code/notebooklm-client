@@ -7,3 +7,7 @@ tests/
 .DS_Store
 output/
 .claude/
+webapp/node_modules/
+webapp/dist/
+.agents/
+

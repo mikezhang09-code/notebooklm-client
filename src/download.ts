@@ -62,7 +62,11 @@ export async function downloadFileHttp(
   const { CurlTransport } = await import('./transport-curl.js');
   const curlBin = await CurlTransport.findBinary();
   if (!curlBin) {
-    throw new Error('Audio download requires curl-impersonate. Run: npm run setup');
+    // Fallback: use undici (pure-Node, always available). Works for CDN downloads
+    // where TLS fingerprint isn't strictly required — Google's CDN accepts any
+    // client as long as auth cookies are presented. curl-impersonate is still
+    // preferred when available for maximum compatibility.
+    return downloadFileUndici(deps, downloadUrl, outputDir, filename);
   }
 
   // Build Netscape cookie jar with proper domain scoping
@@ -206,6 +210,125 @@ if (lastError && !(await readFile(filePath).catch(() => null))) {
 
   console.error(`NotebookLM: Downloaded to ${filePath}`);
   return filePath;
+}
+
+/** CDN auth cookies — must be mirrored to `.googleusercontent.com` domain. */
+const CDN_AUTH_COOKIE_NAMES = new Set([
+  'SID', 'HSID', 'SSID', 'APISID', 'SAPISID',
+  '__Secure-1PSID', '__Secure-3PSID',
+  '__Secure-1PAPISID', '__Secure-3PAPISID',
+  'NID', '__Secure-ENID',
+]);
+
+/**
+ * Pure-Node fallback for {@link downloadFileHttp} used when curl-impersonate
+ * isn't available (e.g. Windows). Retries on 404 to tolerate CDN propagation
+ * delay, same as the curl path. Follows redirects manually so we can rewrite
+ * cookies when crossing from `.google.com` to `.googleusercontent.com`.
+ */
+async function downloadFileUndici(
+  deps: DownloadDeps,
+  downloadUrl: string,
+  outputDir: string,
+  filename: string,
+): Promise<string> {
+  const { session, proxy } = deps;
+  mkdirSync(outputDir, { recursive: true });
+  const filePath = join(outputDir, filename);
+
+  const [{ request, Agent, ProxyAgent }, { writeFile, unlink }] = await Promise.all([
+    import('undici'),
+    import('node:fs/promises'),
+  ]);
+
+  const dispatcher = proxy ? new ProxyAgent(proxy) : new Agent({ connect: { timeout: 30_000 } });
+
+  const buildCookieHeader = (targetUrl: string): string => {
+    const host = new URL(targetUrl).hostname;
+    const isCdn = host.endsWith('.googleusercontent.com');
+    const pairs: string[] = [];
+    if (session.cookieJar && session.cookieJar.length > 0) {
+      for (const c of session.cookieJar) {
+        const dom = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
+        // Match google.com cookies for google.com targets, mirror CDN auth to CDN host.
+        const matches = host.endsWith(dom) || (isCdn && CDN_AUTH_COOKIE_NAMES.has(c.name));
+        if (matches) pairs.push(`${c.name}=${c.value}`);
+      }
+    } else if (session.cookies) {
+      // Fallback: assume cookies are google.com cookies; always send them.
+      return session.cookies;
+    }
+    return pairs.join('; ');
+  };
+
+  const fetchOnce = async (): Promise<{ ok: boolean; html: boolean; status: number; authFail: boolean }> => {
+    let currentUrl = downloadUrl;
+    for (let hop = 0; hop < 20; hop++) {
+      const res = await request(currentUrl, {
+        method: 'GET',
+        dispatcher,
+        headers: {
+          'User-Agent': session.userAgent,
+          'Referer': 'https://notebooklm.google.com/',
+          'Accept': '*/*',
+          'Cookie': buildCookieHeader(currentUrl),
+        },
+      });
+      const status = res.statusCode;
+      if (status >= 300 && status < 400) {
+        const locHeader = res.headers['location'];
+        const loc = Array.isArray(locHeader) ? locHeader[0] : locHeader;
+        if (!loc) { res.body.dump(); return { ok: false, html: false, status, authFail: false }; }
+        currentUrl = new URL(String(loc), currentUrl).toString();
+        res.body.dump();
+        continue;
+      }
+      if (status !== 200) {
+        res.body.dump();
+        return { ok: false, html: false, status, authFail: status === 401 || status === 403 };
+      }
+      const buf = Buffer.from(await res.body.arrayBuffer());
+      const head = buf.slice(0, 200).toString('utf-8').toLowerCase();
+      if (head.includes('<!doctype') || head.includes('<html')) {
+        const authFail =
+          head.includes('accounts.google') ||
+          head.includes('servicelogin') ||
+          head.includes('sign in') ||
+          head.includes('signin') ||
+          head.includes('<title>error 403') ||
+          head.includes('<title>error 401');
+        return { ok: false, html: true, status, authFail };
+      }
+      await writeFile(filePath, buf);
+      return { ok: true, html: false, status, authFail: false };
+    }
+    return { ok: false, html: false, status: 0, authFail: false };
+  };
+
+  const maxRetries = 10;
+  let lastStatus = 0;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const r = await fetchOnce();
+    if (r.ok) {
+      console.error(`NotebookLM: Downloaded to ${filePath}`);
+      return filePath;
+    }
+    lastStatus = r.status;
+    if (r.authFail) {
+      await unlink(filePath).catch(() => {});
+      throw new Error(
+        'Download failed: CDN rejected cookies (session expired). ' +
+        'Re-run: npx notebooklm export-session',
+      );
+    }
+    if (attempt < maxRetries) {
+      const delay = attempt * 10_000;
+      console.error(`NotebookLM: CDN not ready (attempt ${attempt}/${maxRetries}, status=${r.status}), retrying in ${delay / 1000}s...`);
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+  await unlink(filePath).catch(() => {});
+  throw new Error(`Download failed: CDN not ready after ${maxRetries} retries (last status=${lastStatus})`);
 }
 
 /**

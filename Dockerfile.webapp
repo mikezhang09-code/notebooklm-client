@@ -1,0 +1,69 @@
+# Multi-stage build for the notebooklm-client web GUI.
+#
+# The image exposes port 7860 (Hugging Face Spaces default) and serves both
+# the Express API and the built React client on a single origin.
+#
+# Build:  docker build -f Dockerfile.webapp -t notebooklm-gui .
+# Run:    docker run --rm -p 7860:7860 notebooklm-gui
+
+# ── Stage 1: build ──
+FROM node:22-bookworm-slim AS builder
+
+WORKDIR /app
+
+# Install curl so setup-curl.mjs can download curl-impersonate.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl tar xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+# Root manifests + scripts first — keeps layer caching friendly.
+COPY package*.json tsconfig.json ./
+COPY scripts/ ./scripts/
+COPY webapp/package.json ./webapp/package.json
+
+# Install every workspace dep. Postinstall will fetch curl-impersonate for Linux.
+RUN npm install --no-audit --no-fund
+
+# Copy the library source and the webapp source.
+COPY src/ ./src/
+COPY webapp/ ./webapp/
+
+# Build the library (emits dist/), then sync it into node_modules and build
+# the webapp client + server.
+RUN npm run build && \
+    npm --workspace webapp run build
+
+# ── Stage 2: runtime ──
+FROM node:22-bookworm-slim
+
+# libnss3 is needed by some of the TLS-layer dependencies we may load.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates libnss3 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=7860
+ENV HOST=0.0.0.0
+
+# Copy only what the runtime needs.
+COPY --from=builder /app/package.json /app/package-lock.json ./
+COPY --from=builder /app/webapp/package.json ./webapp/package.json
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/bin ./bin
+COPY --from=builder /app/webapp/dist ./webapp/dist
+
+# Install production dependencies only. Skip scripts — the Linux curl-impersonate
+# binary is already in /app/bin from the builder stage.
+RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund && \
+    node webapp/scripts/link-lib.mjs 2>/dev/null || true
+
+# Re-sync the library into the now-installed node_modules/notebooklm-client.
+COPY --from=builder /app/webapp/scripts/link-lib.mjs ./webapp/scripts/link-lib.mjs
+RUN node webapp/scripts/link-lib.mjs
+
+EXPOSE 7860
+
+# Hugging Face Spaces writes to /data if a persistent storage volume is
+# mounted; the webapp itself is stateless so nothing is required there.
+CMD ["node", "webapp/dist/server/index.js"]

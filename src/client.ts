@@ -12,14 +12,22 @@
 import { type Page } from 'puppeteer-core';
 import { SessionError, UserDisplayableError } from './errors.js';
 import { jitteredIncrement } from './utils/humanize.js';
-import { NB_URLS } from './rpc-ids.js';
+import { NB_URLS, ARTIFACT_TYPE } from './rpc-ids.js';
 import { loadNbRpcIds } from './rpc-config.js';
 import { BrowserTransport } from './transport-browser.js';
 import { detectBestTier, createTransport, TIER_LABELS } from './transport-resolver.js';
 import type { TransportTier } from './transport-resolver.js';
 import { saveSession, loadSession, refreshTokens } from './session-store.js';
 import type { Transport } from './transport.js';
-import { downloadFileHttp, downloadAudioBrowser } from './download.js';
+import {
+  downloadFileHttp,
+  downloadAudioBrowser,
+  saveReport,
+  saveQuizHtml,
+  saveSlideDeck,
+  saveInfographic,
+  saveDataTable,
+} from './download.js';
 import * as api from './api.js';
 import {
   runAudioOverview as _runAudioOverview,
@@ -86,6 +94,30 @@ export interface ConnectOptions extends BrowserLaunchOptions {
   /** tls-client profile identifier. Default: 'chrome_131'. */
   tlsClientProfile?: string;
 }
+
+/** Result of {@link NotebookClient.downloadArtifact}. */
+export interface DownloadArtifactResult {
+  /** Numeric artifact type (matches `ARTIFACT_TYPE` enum). */
+  type: number;
+  /** Human-readable label (e.g. 'audio', 'slides'). */
+  typeLabel: string;
+  /** Absolute paths of files written to outputDir. May be empty for video. */
+  files: string[];
+  /** Set when type=VIDEO and no direct downloadUrl was available. */
+  streamUrl?: string;
+}
+
+/** Maps numeric artifact types to short labels. */
+const ARTIFACT_TYPE_LABEL: Record<number, string> = {
+  [ARTIFACT_TYPE.AUDIO]: 'audio',
+  [ARTIFACT_TYPE.REPORT]: 'report',
+  [ARTIFACT_TYPE.VIDEO]: 'video',
+  [ARTIFACT_TYPE.QUIZ]: 'quiz',
+  [ARTIFACT_TYPE.MIND_MAP]: 'mind-map',
+  [ARTIFACT_TYPE.INFOGRAPHIC]: 'infographic',
+  [ARTIFACT_TYPE.SLIDE_DECK]: 'slides',
+  [ARTIFACT_TYPE.DATA_TABLE]: 'data-table',
+};
 
 export class NotebookClient {
   private transport: Transport | null = null;
@@ -499,6 +531,107 @@ export class NotebookClient {
     }
     const session = this.transport!.getSession();
     return downloadFileHttp({ session, proxy: this.proxy }, downloadUrl, outputDir, `audio_${Date.now()}.mp4`);
+  }
+
+  /**
+   * Re-download an existing artifact (audio, report, quiz, flashcards,
+   * infographic, slide-deck, data-table, or video) to `outputDir`.
+   *
+   * Returns absolute paths of the files written, plus a `streamUrl` for
+   * video artifacts that have no direct downloadUrl (HLS/DASH stream only).
+   *
+   * Throws if the artifact id is not found, or for types that have no
+   * headless download path (mind-maps require a real browser).
+   */
+  async downloadArtifact(
+    notebookId: string,
+    artifactId: string,
+    outputDir: string,
+  ): Promise<DownloadArtifactResult> {
+    this.ensureConnected();
+    const artifacts = await this.getArtifacts(notebookId);
+    const artifact = artifacts.find((a) => a.id === artifactId);
+    if (!artifact) {
+      throw new Error(`Artifact not found: ${artifactId}`);
+    }
+
+    const typeLabel = ARTIFACT_TYPE_LABEL[artifact.type] ?? `type:${artifact.type}`;
+    const callRpc = this.callBatchExecute.bind(this);
+    const session = this.transport!.getSession();
+    const proxy = this.proxy;
+    const downloadFn = (url: string, dir: string, filename: string) =>
+      downloadFileHttp({ session, proxy }, url, dir, filename);
+
+    const files: string[] = [];
+    let streamUrl: string | undefined;
+
+    switch (artifact.type) {
+      case ARTIFACT_TYPE.AUDIO: {
+        if (!artifact.downloadUrl) {
+          throw new Error('Audio artifact has no downloadUrl');
+        }
+        const p = await this.downloadAudio(artifact.downloadUrl, outputDir);
+        files.push(p);
+        break;
+      }
+      case ARTIFACT_TYPE.REPORT: {
+        const p = await saveReport(callRpc, artifactId, outputDir);
+        files.push(p);
+        break;
+      }
+      case ARTIFACT_TYPE.VIDEO: {
+        // Best-effort: prefer a direct downloadUrl; fall back to stream URL.
+        if (artifact.downloadUrl) {
+          const p = await downloadFn(artifact.downloadUrl, outputDir, `video_${artifactId}.mp4`);
+          files.push(p);
+        } else {
+          streamUrl = artifact.streamUrl ?? artifact.hlsUrl ?? artifact.dashUrl;
+          if (!streamUrl) {
+            throw new Error('Video artifact has no downloadable or streamable URL');
+          }
+        }
+        break;
+      }
+      case ARTIFACT_TYPE.QUIZ: {
+        // Quiz and flashcards share artifact type 4. Disambiguate by title.
+        const prefix = /flashcard/i.test(artifact.title) ? 'flashcards' : 'quiz';
+        const p = await saveQuizHtml(
+          (id) => this.getInteractiveHtml(id),
+          artifactId,
+          outputDir,
+          prefix,
+        );
+        files.push(p);
+        break;
+      }
+      case ARTIFACT_TYPE.INFOGRAPHIC: {
+        const p = await saveInfographic(callRpc, downloadFn, artifactId, outputDir);
+        files.push(p);
+        break;
+      }
+      case ARTIFACT_TYPE.SLIDE_DECK: {
+        const { pptxPath, pdfPath } = await saveSlideDeck(callRpc, downloadFn, artifactId, outputDir);
+        if (pptxPath) files.push(pptxPath);
+        if (pdfPath) files.push(pdfPath);
+        break;
+      }
+      case ARTIFACT_TYPE.DATA_TABLE: {
+        const p = await saveDataTable(callRpc, artifactId, outputDir);
+        files.push(p);
+        break;
+      }
+      case ARTIFACT_TYPE.MIND_MAP: {
+        throw new Error(
+          'Mind-map artifacts can only be exported via a real browser (transport: "browser"). ' +
+          'Open the notebook in NotebookLM to export.',
+        );
+      }
+      default: {
+        throw new Error(`Artifact type ${artifact.type} (${typeLabel}) is not directly downloadable`);
+      }
+    }
+
+    return { type: artifact.type, typeLabel, files, ...(streamUrl ? { streamUrl } : {}) };
   }
 
   async sendChat(notebookId: string, message: string, sourceIds: string[]): Promise<{ text: string; threadId: string }> {

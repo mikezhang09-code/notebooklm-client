@@ -22,8 +22,14 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "webapp:dev": "npm --workspace webapp run dev",
+    "webapp:build": "npm run build && npm --workspace webapp run build",
+    "webapp:start": "npm --workspace webapp run start"
   },
+  "workspaces": [
+    "webapp"
+  ],
   "keywords": [
     "notebooklm",
     "google",
@@ -53,7 +59,7 @@
     "vitest": "^3.2.0"
   },
   "optionalDependencies": {
-    "tlsclientwrapper": "^1.0.0"
+    "tlsclientwrapper": "^1.0.6"
   },
   "engines": {
     "node": ">=20.0.0"
