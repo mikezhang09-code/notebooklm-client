@@ -24,3 +24,10 @@ Thumbs.db
 
 # Claude local worktrees / temp files
 .claude/
+
+# Environment / secrets — never commit
+.env
+.env.local
+.env.*.local
+*.env
+

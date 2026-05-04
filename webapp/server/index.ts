@@ -18,6 +18,7 @@ import { diagnoseRouter } from './routes/diagnose.js';
 import { chatRouter } from './routes/chat.js';
 import { generateRouter } from './routes/generate.js';
 import { analyzeRouter } from './routes/analyze.js';
+import { corpusRouter } from './routes/corpus.js';
 import { errorHandler } from './lib/handler.js';
 
 const PORT = Number(process.env['PORT'] ?? 7860);
@@ -52,6 +53,7 @@ app.use('/api/diagnose', diagnoseRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/generate', generateRouter);
 app.use('/api/analyze', analyzeRouter);
+app.use('/api/corpus', corpusRouter);
 
 app.use(errorHandler);
 
