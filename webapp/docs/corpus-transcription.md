@@ -66,9 +66,14 @@ Allow group research-corpus-admins to manage ai-service-speech-family in compart
 
 # Lets the Speech service (as its own service principal) read the input
 # audio and write the transcript JSON back to the same bucket.
-# `manage` because we need both GET (input) and PUT (output); scoped to
-# a single bucket so no other buckets in the compartment are exposed.
-Allow any-user to manage object-family in compartment research-corpus where ALL {request.principal.type='aiservicespeechtranscriptionjob', target.bucket.name='nblm-corpus'}
+# `manage object-family` because we need GET (input), PUT (output), and
+# bucket-level metadata calls. Scoping by `target.bucket.name` looks
+# tempting but BREAKS bucket-level ops (BUCKET_READ, LIST_OBJECTS) where
+# that variable is null at evaluation time, so Speech can't even find
+# the bucket → INPUT_LIST_READ_ERROR. Compartment scope is the correct
+# granularity here; use a dedicated compartment for the corpus bucket
+# to keep the grant tight.
+Allow any-user to manage object-family in compartment research-corpus where request.principal.type='aiservicespeechtranscriptionjob'
 ```
 
 The same `nblm-corpus-app` user / API key used for Storage + GenAI
