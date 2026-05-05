@@ -99,8 +99,10 @@ a **Research** section appears in the sidebar with four pages:
   `cohere.command-r-plus-08-2024`); leave it unset to hide the page.
 - **Library** (`/corpus/library`) — paginated table of every artifact
   with kind / origin / title filters, row selection for bulk delete,
-  inline rename + retag, per-row delete, and a cross-link badge that
-  jumps back to the originating NotebookLM notebook when applicable.
+  inline rename + retag, per-row delete, a cross-link badge that
+  jumps back to the originating NotebookLM notebook when applicable,
+  and a **transcript column** (M7) showing live transcription status
+  for audio / video rows.
 - **Upload** (`/corpus/upload`) — drag-and-drop ingest for any document
   (PDF, DOCX, HTML, MD, TXT, CSV, JSON). Auto-fills the title from the
   filename and lets you pick kind + tags before submitting.
@@ -119,13 +121,15 @@ thanks to a `(notebook_id, artifact_id)` unique index.
 2. Copy `.env.example` (at the repo root) to `.env` and fill in real values.
    `.env` is gitignored.
 3. Run `webapp/server/corpus/schema.sql` via OCI Console → Database Actions
-   → SQL, logged in as the **CORPUS** user.
+   → SQL, logged in as the **CORPUS** user. For an existing pre-M7
+   install, also run `webapp/server/corpus/schema.alter-transcription.sql`
+   once to add the transcription columns (idempotent).
 4. Smoke test:
    ```bash
    npm run webapp:dev   # or webapp:start
    curl http://localhost:7860/api/corpus/health
    ```
-   You should see `{"enabled": true, "db": {"ok": true}, "storage": {"ok": true}, "genai": {"ok": true, "dimensions": 1024}}`.
+   You should see `{"enabled": true, "db": {"ok": true}, "storage": {"ok": true}, "genai": {"ok": true, "dimensions": 1024}, "transcription": {"enabled": true, "ok": true, ...}}`.
 
 If `enabled` is `false`, `db.error` (etc.) will tell you which env var is
 missing or which IAM/network call failed.
@@ -184,6 +188,12 @@ POST   /api/corpus/chat                         body: { question, history?, kind
                                                 where each citation maps spans in the answer back to
                                                 1-based source indices in `sources`. 503 if
                                                 `OCI_GENAI_CHAT_MODEL` is not set.
+
+POST   /api/corpus/artifacts/:id/transcribe     M7 — manually (re-)trigger transcription on an
+                                                audio/video row. Returns 202 { status: "queued" };
+                                                the outcome lands on the row's `transcription_status`
+                                                field shortly. 503 if OCI Speech is disabled,
+                                                400 for non-audio/video kinds.
 ```
 
 Auto-ingest is also wired into the notebook download route:
@@ -195,17 +205,22 @@ POST /api/notebooks/:id/artifacts/:artifactId/download
      status ∈ "scheduled" | "disabled" | "skipped_kind" | "no_file"
 ```
 
-Deeper engineering reference for the chat pipeline:
-[`docs/corpus-chat.md`](./docs/corpus-chat.md) — full request lifecycle, SQL,
-prompt assembly, citation re-keying, perf / cost knobs, and a file map.
+Deeper engineering reference:
+
+- [`docs/corpus-chat.md`](./docs/corpus-chat.md) — chat pipeline: request
+  lifecycle, SQL, prompt assembly, citation re-keying, perf / cost knobs.
+- [`docs/corpus-transcription.md`](./docs/corpus-transcription.md) — M7
+  audio / video transcription: state machine, poller design, cost model,
+  error handling, backfill, rollback.
 
 Standalone CLIs (for bootstrapping / debugging, run from `webapp/`):
 
 ```bash
-npx tsx server/corpus/check.ts                          # health probe
-npx tsx server/corpus/test-ingest.ts [path kind title]  # ingest a file
-npx tsx server/corpus/verify-data.ts                    # row count + kNN self-test
-npx tsx server/corpus/search-test.ts "your query"       # top-5 semantic search
+npx tsx server/corpus/check.ts                               # health probe
+npx tsx server/corpus/test-ingest.ts [path kind title]       # ingest a file
+npx tsx server/corpus/verify-data.ts                         # row count + kNN self-test
+npx tsx server/corpus/search-test.ts "your query"            # top-5 semantic search
+npx tsx server/corpus/transcribe-backfill.ts [--apply]       # M7: enqueue transcription for existing audio/video rows
 ```
 
 ## Notes / caveats

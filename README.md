@@ -8,7 +8,9 @@
 
 Standalone CLI, library, **and local Web GUI** for Google's [NotebookLM](https://notebooklm.google.com/) — generate audio podcasts, reports, slides, quizzes, videos, infographics, data tables, flashcards, analyze content, manage notebooks, and chat.
 
-> **New in v0.6.0** — **Chat over corpus**: a RAG chat page that answers questions grounded in your research corpus, with inline citations back to the underlying artifacts. Powered by OCI Generative AI (Cohere Command R / R+) with the same Oracle Autonomous Database vector search the rest of the corpus uses. See [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional).
+> **New in v0.7.0** — **Audio / video transcription**: every audio podcast and video artifact in the research corpus now gets auto-transcribed via **OCI Speech (Whisper)** in the background, then chunked + embedded like any other text. Search and chat seamlessly cover spoken content (Chinese, English, 50+ languages via Whisper auto-detect). Status surfaces inline in the Library with a `⏳ → ✓` badge per row and a manual retry button. **5 free transcription hours / month per tenancy** covers normal personal use at zero cost.
+>
+> **v0.6.0** — **Chat over corpus**: a RAG chat page that answers questions grounded in your research corpus, with inline citations back to the underlying artifacts. Powered by OCI Generative AI (Cohere Command R / R+) with the same Oracle Autonomous Database vector search the rest of the corpus uses. See [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional).
 >
 > **New in v0.5.0** — an optional **Research Corpus** on the Web GUI: every artifact you download (and anything you upload) is auto-ingested into Oracle ADB + Object Storage with 1024-dim multilingual embeddings, then made searchable semantically across notebooks. Library page for curation (rename, retag, delete, share links), deep-link cross-references back to the originating notebook.
 >
@@ -411,7 +413,9 @@ MIT
 
 Google [NotebookLM](https://notebooklm.google.com/) 的独立 CLI、编程库 **和本地 Web GUI** —— 生成音频播客、报告、幻灯片、测验、视频、信息图、数据表、闪卡，分析内容、管理笔记本、对话。
 
-> **v0.6.0 新增** —— **基于语料库的 RAG 对话**：新增 `/corpus/chat` 页面，模型在你的研究语料库内检索片段后给出带有内联引用的答案。底层使用 OCI Generative AI（Cohere Command R / R+）+ Oracle Autonomous Database 向量检索。详见 webapp README 中的 [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional)。
+> **v0.7.0 新增** —— **音视频自动转写**：研究语料库中的每个音频播客和视频产物现在都会通过 **OCI Speech（Whisper 模型）** 在后台自动转写，再按文本流程切块 + 嵌入。语义搜索和对话天然覆盖语音内容（中文、英文等 50+ 种语言，Whisper 自动检测）。Library 页每行带 `⏳ → ✓` 状态徽标和手动重试按钮。**每个租户每月 5 小时免费转写额度**通常足以覆盖个人使用，零成本。
+>
+> **v0.6.0** —— **基于语料库的 RAG 对话**：新增 `/corpus/chat` 页面，模型在你的研究语料库内检索片段后给出带有内联引用的答案。底层使用 OCI Generative AI（Cohere Command R / R+）+ Oracle Autonomous Database 向量检索。详见 webapp README 中的 [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional)。
 >
 > **v0.5.0 新增** —— Web GUI 可选的 **研究语料库（Research Corpus）**：每次下载的产物（以及任意上传的文档）自动写入 Oracle ADB + Object Storage，生成 1024 维多语言向量嵌入，跨所有笔记本做语义搜索。Library 页面支持整理（重命名、改标签、删除、生成分享链接），每个条目都有反向链接跳回原始笔记本。
 >
@@ -809,6 +813,26 @@ MIT
 ---
 
 ## Changelog / 更新日志
+
+### v0.7.0 (2026-05-05)
+
+- **Audio / video transcription via OCI Speech (Whisper)** — `audio` and `video` artifacts in the research corpus are now auto-transcribed in the background. Transcripts get chunked and embedded into the same `artifact_chunks` table the rest of the corpus uses, so they show up natively in `/corpus` semantic search and `/corpus/chat` answers. Whisper model + `auto` language detection works out of the box for Chinese, English, Japanese, Korean, and 50+ other languages.
+- **Inline transcription status in the Library** — new "Transcript" column on `/corpus/library` per row: `—` for non-audio/video, pulsing amber `queued`/`running` for in-flight jobs, `✓` for done, `✗` (with hover tooltip) for failed. The detail drawer grows a Transcription sub-card with the status, finish timestamp, error detail, and a `Transcribe` / `Re-transcribe` button. The page auto-refreshes every 15 s while any visible row is in flight.
+- **Background poller** — single in-process `setInterval` (default 30 s tick, configurable via `CORPUS_TRANSCRIBE_POLL_MS`) reconciles every `transcribing` row against OCI Speech, finalises `SUCCEEDED` jobs (chunk + embed + insert), and marks `FAILED` / `CANCELED` jobs accordingly. Bounded concurrency on finalisation keeps the embedding spend predictable.
+- **State machine** — four new nullable columns on `artifacts`: `transcription_status` (`null|pending|transcribing|done|failed|skipped`), `transcription_job_ocid`, `transcribed_at`, `transcription_error`. Idempotent migration script (`webapp/server/corpus/schema.alter-transcription.sql`) for existing installs.
+- **New endpoint + helpers** — `POST /api/corpus/artifacts/:id/transcribe` for the manual retry button; `GET /api/corpus/health` now also returns a `transcription: { enabled, ok, region, language, error? }` field. New backfill CLI: `npx tsx server/corpus/transcribe-backfill.ts [--apply] [--include-failed]`.
+- **Cost** — **$0.50 / hour with 5 free hours / month per OCI tenancy**, shared with the rest of the account. A typical month of personal podcast / video research fits comfortably under the free cap. Set `OCI_SPEECH_ENABLED=false` to disable cleanly with no schema rollback.
+- **Engineering reference** — full state machine, poller design, output parsing, error handling, cost model, and rollback steps documented at [`webapp/docs/corpus-transcription.md`](./webapp/docs/corpus-transcription.md).
+
+---
+
+- **基于 OCI Speech（Whisper）的音视频自动转写** —— 研究语料库中的 `audio` 和 `video` 产物现在会在后台自动转写。转写文本按和其它产物相同的流程切块 + 嵌入，写入同一张 `artifact_chunks` 表，因此可以原生出现在 `/corpus` 语义搜索结果和 `/corpus/chat` 答案中。Whisper 模型 + `auto` 语言检测开箱即用，覆盖中文、英文、日文、韩文以及 50+ 种其它语言。
+- **Library 页内联转写状态** —— `/corpus/library` 表格新增 "Transcript" 列：非音视频显示 `—`；进行中显示带脉冲的琥珀色 `queued` / `running`；完成 `✓`；失败 `✗`（鼠标悬停显示错误详情）。详情抽屉新增"Transcription"子卡片，展示状态、完成时间、错误信息，以及 `Transcribe` / `Re-transcribe` 按钮。在有进行中任务时页面每 15 秒自动刷新一次。
+- **后台轮询器** —— 进程内单一 `setInterval`（默认 30 秒一拍，可通过 `CORPUS_TRANSCRIBE_POLL_MS` 调整），把所有 `transcribing` 行同步到 OCI Speech 的最新状态：`SUCCEEDED` 走完结流程（切块 + 嵌入 + 入库），`FAILED` / `CANCELED` 写入错误。完结阶段并发受限，保证嵌入开销可预测。
+- **状态机** —— `artifacts` 表新增 4 个可空列：`transcription_status`（`null|pending|transcribing|done|failed|skipped`）、`transcription_job_ocid`、`transcribed_at`、`transcription_error`。提供幂等迁移脚本 `webapp/server/corpus/schema.alter-transcription.sql`，可重复执行。
+- **新端点 + 辅助工具** —— `POST /api/corpus/artifacts/:id/transcribe` 用于手动重试；`GET /api/corpus/health` 现在额外返回 `transcription: { enabled, ok, region, language, error? }` 字段。补录脚本：`npx tsx server/corpus/transcribe-backfill.ts [--apply] [--include-failed]`。
+- **成本** —— **每小时 $0.50，每个租户每月 5 小时免费**（账号内共享）。个人研究的常规月用量基本都在免费额度内。设置 `OCI_SPEECH_ENABLED=false` 可干净禁用，无需回滚 schema。
+- **工程参考** —— 完整的状态机、轮询器设计、输出解析、错误处理、成本模型与回滚步骤详见 [`webapp/docs/corpus-transcription.md`](./webapp/docs/corpus-transcription.md)。
 
 ### v0.6.0 (2026-05-05)
 
