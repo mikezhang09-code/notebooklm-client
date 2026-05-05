@@ -5,11 +5,13 @@ import {
   deleteArtifact,
   getArtifact,
   listArtifacts,
+  transcribeArtifact,
   updateArtifact,
   type ArtifactDetail,
   type ArtifactListItem,
   type ArtifactListResponse,
   type ArtifactKind,
+  type TranscriptionStatus,
 } from '../lib/corpus';
 import { ShareControls } from './CorpusPage';
 
@@ -65,6 +67,69 @@ function parseTags(raw: unknown): string[] {
   return [];
 }
 
+const AUDIO_VIDEO_KINDS = new Set(['audio', 'video']);
+
+/**
+ * Compact inline badge for the transcript column. Non-audio/video rows
+ * render an em-dash; `skipped` rows also dash. `pending` and
+ * `transcribing` both render as a subtle spinner.
+ */
+function TranscriptionBadge({
+  kind,
+  status,
+  error,
+}: {
+  kind: string;
+  status: TranscriptionStatus | null | undefined;
+  error: string | null | undefined;
+}): JSX.Element {
+  if (!AUDIO_VIDEO_KINDS.has(kind)) {
+    return <span className="text-slate-300">—</span>;
+  }
+  if (!status || status === 'skipped') {
+    return (
+      <span
+        className="text-slate-400"
+        title={error ?? 'Not transcribed'}
+      >
+        —
+      </span>
+    );
+  }
+  if (status === 'pending' || status === 'transcribing') {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-amber-700"
+        title={status === 'pending' ? 'Queued' : 'Transcribing…'}
+      >
+        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+        {status === 'pending' ? 'queued' : 'running'}
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return (
+      <span
+        className="text-emerald-700"
+        title="Transcript indexed"
+        aria-label="Done"
+      >
+        ✓
+      </span>
+    );
+  }
+  // failed
+  return (
+    <span
+      className="text-rose-700"
+      title={error ?? 'Transcription failed'}
+      aria-label="Failed"
+    >
+      ✗
+    </span>
+  );
+}
+
 export default function CorpusLibraryPage() {
   const [kind, setKind] = useState<ArtifactKind | ''>('');
   const [origin, setOrigin] = useState<'' | 'notebooklm' | 'upload'>('');
@@ -109,6 +174,26 @@ export default function CorpusLibraryPage() {
   useEffect(() => {
     setOffset(0);
   }, [kind, origin]);
+
+  // M7: auto-refresh while any visible row has a transcription in flight.
+  // The poller on the server side ticks every 30s; we refresh every 15s so
+  // we catch state changes quickly without hammering the API when idle.
+  const hasActiveTranscriptions = useMemo(() => {
+    if (!data) return false;
+    return data.items.some(
+      (a) =>
+        a.TRANSCRIPTION_STATUS === 'pending' ||
+        a.TRANSCRIPTION_STATUS === 'transcribing',
+    );
+  }, [data]);
+
+  useEffect(() => {
+    if (!hasActiveTranscriptions) return;
+    const t = setInterval(() => {
+      void load();
+    }, 15000);
+    return () => clearInterval(t);
+  }, [hasActiveTranscriptions, load]);
 
   const filteredRows = useMemo(() => {
     if (!data) return [];
@@ -315,6 +400,12 @@ export default function CorpusLibraryPage() {
                     <th className="px-3 py-2">Origin</th>
                     <th className="px-3 py-2 text-right">Size</th>
                     <th className="px-3 py-2 text-right">Chunks</th>
+                    <th
+                      className="px-3 py-2 text-center"
+                      title="Audio/video transcription status"
+                    >
+                      Transcript
+                    </th>
                     <th className="px-3 py-2">Created</th>
                   </tr>
                 </thead>
@@ -380,6 +471,18 @@ export default function CorpusLibraryPage() {
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-xs text-slate-700">
                           {a.CHUNK_COUNT}
+                        </td>
+                        <td className="px-3 py-2 text-center text-xs">
+                          <TranscriptionBadge
+                            kind={a.KIND}
+                            status={
+                              (a.TRANSCRIPTION_STATUS as
+                                | TranscriptionStatus
+                                | null
+                                | undefined) ?? null
+                            }
+                            error={a.TRANSCRIPTION_ERROR}
+                          />
                         </td>
                         <td className="px-3 py-2 text-xs text-slate-500">
                           {formatDate(a.CREATED_AT)}
@@ -533,6 +636,25 @@ function DetailPanel({
     }
   }
 
+  // ── M7: transcription retry ────────────────────────────────────────
+  const [transcribeBusy, setTranscribeBusy] = useState(false);
+  const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  async function handleTranscribe() {
+    setTranscribeBusy(true);
+    setTranscribeError(null);
+    try {
+      await transcribeArtifact(id);
+      // Poll the detail row every 5s for up to ~2 minutes, or until the
+      // status leaves 'pending'/'transcribing'. onMutated refreshes the
+      // list (which owns the 15s auto-refresh for in-flight rows).
+      onMutated();
+    } catch (err) {
+      setTranscribeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTranscribeBusy(false);
+    }
+  }
+
   return (
     <div className="card space-y-3">
       <div className="flex items-start justify-between">
@@ -623,6 +745,81 @@ function DetailPanel({
               </Link>
             </div>
           )}
+
+          {/* M7: transcription status + retry */}
+          {(() => {
+            const kindStr = String(get('KIND', 'kind') ?? '');
+            if (!AUDIO_VIDEO_KINDS.has(kindStr)) return null;
+            const status = ((get('TRANSCRIPTION_STATUS', 'transcriptionStatus') ??
+              null) as TranscriptionStatus | null);
+            const trxError = get('TRANSCRIPTION_ERROR', 'transcriptionError') as
+              | string
+              | null
+              | undefined;
+            const trxAt = get('TRANSCRIBED_AT', 'transcribedAt') as
+              | string
+              | null
+              | undefined;
+            const statusLabel: Record<TranscriptionStatus, string> = {
+              pending: 'Queued for transcription',
+              transcribing: 'Transcribing…',
+              done: 'Transcribed',
+              failed: 'Transcription failed',
+              skipped: 'Transcription skipped',
+            };
+            const isInFlight = status === 'pending' || status === 'transcribing';
+            const canRetry = !isInFlight;
+            return (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <TranscriptionBadge
+                      kind={kindStr}
+                      status={status}
+                      error={trxError}
+                    />
+                    <span className="text-slate-700">
+                      {status ? statusLabel[status] : 'Not transcribed yet'}
+                    </span>
+                  </div>
+                  {canRetry && (
+                    <button
+                      type="button"
+                      className="btn-secondary text-[11px]"
+                      disabled={transcribeBusy}
+                      onClick={() => void handleTranscribe()}
+                      title={
+                        status === 'done'
+                          ? 'Re-run transcription (will replace existing chunks)'
+                          : 'Run transcription now'
+                      }
+                    >
+                      {transcribeBusy
+                        ? 'Queuing…'
+                        : status === 'done'
+                          ? 'Re-transcribe'
+                          : 'Transcribe'}
+                    </button>
+                  )}
+                </div>
+                {typeof trxAt === 'string' && status === 'done' && (
+                  <div className="mt-1 text-[11px] text-slate-500">
+                    {formatDate(trxAt)}
+                  </div>
+                )}
+                {status === 'failed' && trxError && (
+                  <div className="mt-1 text-[11px] text-rose-700">
+                    {trxError}
+                  </div>
+                )}
+                {transcribeError && (
+                  <div className="mt-1 text-[11px] text-rose-700">
+                    {transcribeError}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-3">
             <a

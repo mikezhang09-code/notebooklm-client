@@ -17,7 +17,22 @@ export interface CorpusHealth {
   storage: { ok: boolean; bucket?: string; approxObjectCount?: number; error?: string };
   genai: { ok: boolean; model?: string; dimensions?: number; error?: string };
   chat: { enabled: boolean; model?: string };
+  /** M7 — OCI Speech transcription. `ok: false` when probe failed. */
+  transcription?: {
+    enabled: boolean;
+    ok?: boolean;
+    region?: string;
+    language?: string;
+    error?: string;
+  };
 }
+
+export type TranscriptionStatus =
+  | 'pending'
+  | 'transcribing'
+  | 'done'
+  | 'failed'
+  | 'skipped';
 
 export function getCorpusHealth(): Promise<CorpusHealth> {
   return apiGet<CorpusHealth>('/api/corpus/health');
@@ -116,6 +131,11 @@ export interface ArtifactListItem {
   METADATA: Record<string, unknown> | string | null;
   CREATED_AT: string;
   CHUNK_COUNT: number;
+  /** M7 — transcription tracking. Null for non-audio/video or pre-M7 rows. */
+  TRANSCRIPTION_STATUS?: TranscriptionStatus | null;
+  TRANSCRIPTION_JOB_OCID?: string | null;
+  TRANSCRIBED_AT?: string | null;
+  TRANSCRIPTION_ERROR?: string | null;
 }
 
 export interface ArtifactListResponse {
@@ -279,4 +299,23 @@ export interface ChatRequest {
 
 export function chatWithCorpus(req: ChatRequest): Promise<ChatResult> {
   return apiJson<ChatResult>('/api/corpus/chat', req);
+}
+
+// ─────────────────────────────────────────────────────── M7 transcribe ──
+
+export interface TranscribeResult {
+  id: string;
+  status: 'queued';
+}
+
+/**
+ * Manually (re-)trigger transcription for an audio/video artifact.
+ * Returns 202 with `{ status: 'queued' }`; the actual outcome lands on
+ * the artifact row's TRANSCRIPTION_STATUS field shortly after.
+ */
+export function transcribeArtifact(id: string): Promise<TranscribeResult> {
+  return apiJson<TranscribeResult>(
+    `/api/corpus/artifacts/${encodeURIComponent(id)}/transcribe`,
+    {},
+  );
 }
