@@ -40,6 +40,7 @@ export type {
 export {
   enqueueTranscription,
   retryTranscription,
+  refetchTranscription,
   reconcileOnce,
   startTranscriptionPoller,
 } from './transcribe.js';

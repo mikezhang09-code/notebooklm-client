@@ -4,15 +4,21 @@
  * OCI_SPEECH_ENABLED was off).
  *
  * Usage (from webapp/):
- *   npx tsx server/corpus/transcribe-backfill.ts           # dry-run — lists targets
- *   npx tsx server/corpus/transcribe-backfill.ts --apply   # actually submit jobs
+ *   npx tsx server/corpus/transcribe-backfill.ts                         # dry-run — lists targets
+ *   npx tsx server/corpus/transcribe-backfill.ts --apply                 # submit fresh Speech jobs
+ *   npx tsx server/corpus/transcribe-backfill.ts --apply --include-failed # also retry rows at status='failed'
+ *   npx tsx server/corpus/transcribe-backfill.ts --apply --refetch       # re-run finalise against existing OCIDs (no Speech resubmit)
  *
- * By default only rows with NULL or 'skipped' transcription_status are
- * picked up. Pass --include-failed to also retry rows that failed in a
- * previous run (useful when Speech was temporarily down).
+ * Modes:
+ *   - default      — pick up rows at NULL | 'skipped' | 'pending'
+ *   - --include-failed — also pick up 'failed' rows and retry (new Speech job each)
+ *   - --refetch    — for rows at 'failed' that have a job OCID and whose
+ *                    Speech-side status is SUCCEEDED, re-run finalise without
+ *                    resubmitting. Use this when Speech did its job but our
+ *                    finaliser tripped (e.g. output-filename resolution bug,
+ *                    DB transient). Saves Whisper $$ and 5+ minutes.
  *
- * Safe to re-run. enqueueTranscription is idempotent — rows already
- * 'transcribing' or 'done' are left alone.
+ * Safe to re-run. All paths are idempotent.
  */
 
 import oracledb from 'oracledb';
@@ -20,6 +26,7 @@ import { getCorpusConfig } from './config.js';
 import { withConnection } from './oci/db.js';
 import {
   enqueueTranscription,
+  refetchTranscription,
   retryTranscription,
   type EnqueueOutcome,
 } from './transcribe.js';
@@ -36,6 +43,15 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const apply = args.includes('--apply');
   const includeFailed = args.includes('--include-failed');
+  const refetch = args.includes('--refetch');
+
+  if (refetch && includeFailed) {
+    console.error(
+      '[backfill] --refetch and --include-failed are mutually exclusive. ' +
+        '--refetch already targets failed rows; pick one.',
+    );
+    process.exit(2);
+  }
 
   const cfg = await getCorpusConfig();
   if (!cfg) {
@@ -49,7 +65,12 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const statusClause = includeFailed
+  // --refetch targets *only* failed rows that still have a job OCID —
+  // anything else is a no-op or needs a resubmit. The other modes pick
+  // up never-submitted / previously-failed rows depending on flags.
+  const statusClause = refetch
+    ? `(transcription_status = 'failed' AND transcription_job_ocid IS NOT NULL)`
+    : includeFailed
     ? `(transcription_status IS NULL OR transcription_status IN ('skipped','failed','pending'))`
     : `(transcription_status IS NULL OR transcription_status IN ('skipped','pending'))`;
 
@@ -67,9 +88,13 @@ async function main(): Promise<void> {
   });
 
   if (rows.length === 0) {
+    const filter = refetch
+      ? "failed (with job OCID)"
+      : includeFailed
+      ? 'null|skipped|failed|pending'
+      : 'null|skipped|pending';
     console.log(
-      `[backfill] no audio/video rows need transcription ` +
-        `(status filter: ${includeFailed ? 'null|skipped|failed|pending' : 'null|skipped|pending'})`,
+      `[backfill] no audio/video rows need transcription (status filter: ${filter})`,
     );
     return;
   }
@@ -82,25 +107,28 @@ async function main(): Promise<void> {
   }
 
   if (!apply) {
-    console.log(`\n[backfill] dry-run complete. Re-run with --apply to submit ${rows.length} job(s).`);
+    const verb = refetch ? 'refetch' : 'submit';
+    console.log(`\n[backfill] dry-run complete. Re-run with --apply to ${verb} ${rows.length} row(s).`);
     return;
   }
 
-  console.log(`\n[backfill] submitting ${rows.length} job(s)…`);
+  const actionLabel = refetch ? 'refetching' : 'submitting';
+  console.log(`\n[backfill] ${actionLabel} ${rows.length} row(s)…`);
   let submitted = 0;
   let failed = 0;
   let skipped = 0;
   for (const r of rows) {
     let outcome: EnqueueOutcome;
     try {
-      // 'failed' rows must go through retryTranscription — enqueue
-      // short-circuits on any non-null, non-'pending' status to stay
-      // idempotent. For null / 'skipped' / 'pending' rows the plain
-      // enqueue path is enough.
-      outcome =
-        r.TRANSCRIPTION_STATUS === 'failed'
-          ? await retryTranscription(cfg, r.ID)
-          : await enqueueTranscription(cfg, r.ID);
+      // Dispatch table:
+      //   --refetch  → refetchTranscription (re-runs finalise, no Speech resubmit)
+      //   'failed'   → retryTranscription  (reset + new submit)
+      //   else       → enqueueTranscription (idempotent first submit)
+      outcome = refetch
+        ? await refetchTranscription(cfg, r.ID)
+        : r.TRANSCRIPTION_STATUS === 'failed'
+        ? await retryTranscription(cfg, r.ID)
+        : await enqueueTranscription(cfg, r.ID);
     } catch (err) {
       failed += 1;
       console.warn(

@@ -102,14 +102,15 @@ export function sanitiseDisplayName(raw: string): string {
 }
 
 /**
- * Submit a new transcription job. Returns the job OCID and the object
- * name where the JSON output will eventually land (deterministic —
- * `<speechOutputPrefix><objectName>.json`).
+ * Submit a new transcription job. Returns the job OCID; the output
+ * object name is resolved later by the finaliser via listObjects
+ * (see findTranscriptObjectName) since Speech's output-filename scheme
+ * isn't a pure function of the input and differs by model version.
  */
 export async function submitTranscriptionJob(
   cfg: CorpusConfig,
   opts: SubmitOptions,
-): Promise<{ jobOcid: string; outputObjectName: string }> {
+): Promise<{ jobOcid: string }> {
   const client = await getSpeechClient(cfg);
   const language = opts.language ?? cfg.speechLanguage;
 
@@ -155,15 +156,11 @@ export async function submitTranscriptionJob(
     throw new Error('OCI Speech did not return a job OCID');
   }
 
-  // OCI Speech names the per-input JSON output as:
-  //   <prefix><namespace>_<bucket>_<object>.json
-  // All delimiters in `object` become `_`. We reconstruct this so the
-  // poller can fetch the file directly; fallback to listObjects if our
-  // guess ever misses (see fetchTranscriptText()).
-  const flatName = opts.objectName.replace(/[/\\]/g, '_');
-  const outputObjectName = `${cfg.speechOutputPrefix}${cfg.ociNamespace}_${opts.bucket}_${flatName}.json`;
-
-  return { jobOcid: jobId, outputObjectName };
+  // We don't try to predict the output object name here — OCI Speech
+  // writes under `<prefix>job-<ocidTail>/<arbitrary>.json` and the exact
+  // filename varies by model version. The finaliser uses listObjects
+  // keyed on the job OCID (see findTranscriptObjectName).
+  return { jobOcid: jobId };
 }
 
 // ─── Poll ────────────────────────────────────────────────────────────────
@@ -219,22 +216,68 @@ interface SpeechOutputJson {
 }
 
 /**
- * Fetch the JSON output blob from Object Storage and flatten it to a
- * single plain-text string suitable for chunking and embedding.
+ * Locate the actual transcript JSON in Object Storage for a given job.
  *
- * Returns null when the output object is missing or empty.
+ * OCI Speech writes under `<speechOutputPrefix>job-<ocidTail>/<arbitrary>.json`
+ * where `<ocidTail>` is everything after the last `.` in the job OCID.
+ * The `<arbitrary>` filename varies by model version (the current
+ * WHISPER_MEDIUM pattern is `<namespace>_<bucket>_<flatObjectName>.json`
+ * but we don't rely on that — we just take the first `.json` under the
+ * job prefix). The poller calls this once the job state is SUCCEEDED.
+ *
+ * Returns null when nothing is found (Speech reported SUCCEEDED but
+ * output is missing — either a bucket-write permission issue or a race).
+ */
+export async function findTranscriptObjectName(
+  cfg: CorpusConfig,
+  jobOcid: string,
+): Promise<string | null> {
+  const ocidTail = jobOcid.split('.').pop();
+  if (!ocidTail) return null;
+  const prefix = `${cfg.speechOutputPrefix}job-${ocidTail}/`;
+
+  const client = await getStorageClient(cfg);
+  let start: string | undefined;
+  do {
+    const resp = await client.listObjects({
+      namespaceName: cfg.ociNamespace,
+      bucketName: cfg.ociBucket,
+      prefix,
+      start,
+      limit: 1000,
+    });
+    const page = resp.listObjects;
+    for (const obj of page.objects ?? []) {
+      if (obj.name && obj.name.toLowerCase().endsWith('.json')) {
+        return obj.name;
+      }
+    }
+    start = page.nextStartWith ?? undefined;
+  } while (start);
+
+  return null;
+}
+
+/**
+ * Fetch the transcript JSON for a job and flatten it to plain text.
+ * Combines `findTranscriptObjectName` (locate) with a getObject + parse
+ * (hydrate). Returns null when the output object is missing, empty, or
+ * has no usable text payload.
  */
 export async function fetchTranscriptText(
   cfg: CorpusConfig,
-  outputObjectName: string,
-): Promise<string | null> {
+  jobOcid: string,
+): Promise<{ text: string; objectName: string } | null> {
+  const objectName = await findTranscriptObjectName(cfg, jobOcid);
+  if (!objectName) return null;
+
   const client = await getStorageClient(cfg);
   let json: SpeechOutputJson;
   try {
     const resp = await client.getObject({
       namespaceName: cfg.ociNamespace,
       bucketName: cfg.ociBucket,
-      objectName: outputObjectName,
+      objectName,
     });
     const bodyText = await streamToString(resp.value);
     if (!bodyText) return null;
@@ -250,13 +293,13 @@ export async function fetchTranscriptText(
 
   // Preferred: the service joins tokens into a punctuated string for us.
   const joined = first.transcription?.trim();
-  if (joined) return joined;
+  if (joined) return { text: joined, objectName };
 
   // Fallback: join tokens manually. Handles older output shapes.
   const tokens = first.tokens
     ?.map((t) => t.token ?? t.text ?? '')
     .filter((s) => s.length > 0);
-  if (tokens && tokens.length > 0) return tokens.join(' ');
+  if (tokens && tokens.length > 0) return { text: tokens.join(' '), objectName };
 
   return null;
 }

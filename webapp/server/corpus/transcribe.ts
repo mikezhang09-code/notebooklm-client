@@ -255,50 +255,124 @@ export async function retryTranscription(
   return enqueueTranscription(cfg, artifactId);
 }
 
+/**
+ * Re-run finaliseTranscription against the existing job OCID, without
+ * resubmitting to OCI Speech. This is the right escape hatch when the
+ * Speech job finished SUCCEEDED but our finaliser tripped on something
+ * local (output-filename guess was wrong, chunking bug, DB transient,
+ * etc.) — resubmitting would waste $$ and 5+ minutes for no new info.
+ *
+ * Contract:
+ *   - Row must have a transcription_job_ocid. Otherwise → submit-style
+ *     retry via retryTranscription() is the right call.
+ *   - Speech-side job state must be SUCCEEDED. Anything else returns
+ *     a descriptive EnqueueOutcome so the caller can decide.
+ */
+export async function refetchTranscription(
+  cfg: CorpusConfig,
+  artifactId: string,
+): Promise<EnqueueOutcome> {
+  if (!cfg.speechEnabled) {
+    return { status: 'skipped', reason: 'OCI_SPEECH_ENABLED=false' };
+  }
+
+  const art = await loadArtifact(cfg, artifactId);
+  if (!art) {
+    throw new Error(`refetchTranscription: artifact ${artifactId} not found`);
+  }
+  if (!art.transcriptionJobOcid) {
+    return {
+      status: 'failed',
+      error: 'no job OCID on artifact — use retry (re-submit) instead',
+    };
+  }
+
+  // Verify Speech-side the job really is SUCCEEDED before we spend cycles.
+  let view: { status: TranscriptionJobStatus; lifecycleDetails?: string };
+  try {
+    view = await getTranscriptionJob(cfg, art.transcriptionJobOcid);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { status: 'failed', error: `poll: ${msg}` };
+  }
+
+  if (view.status !== 'SUCCEEDED') {
+    return {
+      status: 'failed',
+      error: `job ${view.status}, not SUCCEEDED — cannot refetch`,
+    };
+  }
+
+  // Flip the row back to 'transcribing' so finaliseTranscription can
+  // run its usual DELETE+INSERT path idempotently (the guarded UPDATE
+  // inside updateTranscriptionStatus won't conflict with other ticks
+  // since no other tick can pick this row up at 'failed').
+  await updateTranscriptionStatus(cfg, artifactId, {
+    status: 'transcribing',
+    error: null,
+  });
+
+  const outcome = await finaliseTranscription(cfg, {
+    id: art.id,
+    kind: art.kind,
+    bucket: art.bucket,
+    objectName: art.objectName,
+    mimeType: art.mimeType,
+    sizeBytes: art.sizeBytes,
+    transcriptionStatus: 'transcribing',
+    transcriptionJobOcid: art.transcriptionJobOcid,
+  });
+  return outcome === 'done'
+    ? { status: 'transcribing', jobOcid: art.transcriptionJobOcid } // reuses existing OCID
+    : { status: 'failed', error: 'finalise failed (see row error)' };
+}
+
 // ─── Finalise (SUCCEEDED jobs) ───────────────────────────────────────────
 
 /**
  * Fetch the Speech JSON output, chunk + embed the transcript text, and
  * write the chunks to `artifact_chunks`. Flips status to 'done' on success
  * or 'failed' if chunking/embedding/insert fails.
+ *
+ * Returns the terminal status so the caller (reconcileOnce) can keep an
+ * accurate tick-level counter of done-vs-failed outcomes.
  */
 async function finaliseTranscription(
   cfg: CorpusConfig,
   art: ArtifactForTranscription,
-): Promise<void> {
-  // Re-derive the output object name. Must match the derivation in
-  // submitTranscriptionJob() — OCI Speech's output naming is deterministic
-  // from (prefix, namespace, bucket, flattened-object-name).
-  const flatName = art.objectName.replace(/[/\\]/g, '_');
-  const outputObjectName = `${cfg.speechOutputPrefix}${cfg.ociNamespace}_${art.bucket}_${flatName}.json`;
-
-  let transcript: string | null;
+): Promise<'done' | 'failed'> {
+  let transcript: { text: string; objectName: string } | null;
   try {
-    transcript = await fetchTranscriptText(cfg, outputObjectName);
+    transcript = await fetchTranscriptText(cfg, art.transcriptionJobOcid!);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await updateTranscriptionStatus(cfg, art.id, {
       status: 'failed',
       error: `fetch output: ${msg}`,
     });
-    return;
+    return 'failed';
   }
 
-  if (!transcript || transcript.trim().length === 0) {
+  if (!transcript || transcript.text.trim().length === 0) {
     await updateTranscriptionStatus(cfg, art.id, {
       status: 'failed',
-      error: 'empty transcript (model returned no text)',
+      error: transcript
+        ? 'empty transcript (model returned no text)'
+        : 'output object not found under transcripts/job-<ocid>/',
     });
-    return;
+    return 'failed';
   }
 
-  const chunks = chunkText(transcript);
+  const chunks = chunkText(transcript.text);
   if (chunks.length === 0) {
     await updateTranscriptionStatus(cfg, art.id, {
       status: 'done',
       error: null,
     });
-    return;
+    console.log(
+      `[transcribe] finalised artifact=${art.id} chunks=0 source=${transcript.objectName}`,
+    );
+    return 'done';
   }
 
   let vectors: number[][];
@@ -314,14 +388,14 @@ async function finaliseTranscription(
       status: 'failed',
       error: `embed: ${msg}`,
     });
-    return;
+    return 'failed';
   }
   if (vectors.length !== chunks.length) {
     await updateTranscriptionStatus(cfg, art.id, {
       status: 'failed',
       error: `embed count mismatch: ${vectors.length}/${chunks.length}`,
     });
-    return;
+    return 'failed';
   }
 
   try {
@@ -371,7 +445,7 @@ async function finaliseTranscription(
       status: 'failed',
       error: `insert chunks: ${msg}`,
     });
-    return;
+    return 'failed';
   }
 
   await updateTranscriptionStatus(cfg, art.id, {
@@ -379,8 +453,9 @@ async function finaliseTranscription(
     error: null,
   });
   console.log(
-    `[transcribe] finalised artifact=${art.id} chunks=${chunks.length}`,
+    `[transcribe] finalised artifact=${art.id} chunks=${chunks.length} source=${transcript.objectName}`,
   );
+  return 'done';
 }
 
 // ─── Poller tick ─────────────────────────────────────────────────────────
@@ -475,11 +550,19 @@ export async function reconcileOnce(cfg: CorpusConfig): Promise<{
     }
   }
 
-  // Phase 2 — finalise SUCCEEDED jobs with bounded parallelism.
+  // Phase 2 — finalise SUCCEEDED jobs with bounded parallelism. We
+  // count done-vs-failed outcomes separately so the tick-level log
+  // tells the truth (previously every finalise call incremented
+  // `finalised` regardless of whether it actually produced chunks).
   for (let i = 0; i < toFinalise.length; i += FINALISE_CONCURRENCY) {
     const batch = toFinalise.slice(i, i + FINALISE_CONCURRENCY);
-    await Promise.all(batch.map((a) => finaliseTranscription(cfg, a)));
-    results.finalised += batch.length;
+    const outcomes = await Promise.all(
+      batch.map((a) => finaliseTranscription(cfg, a)),
+    );
+    for (const o of outcomes) {
+      if (o === 'done') results.finalised += 1;
+      else results.failed += 1;
+    }
   }
 
   return results;
