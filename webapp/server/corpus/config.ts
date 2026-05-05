@@ -199,9 +199,24 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
       `db=${cached.oracleConnectString} genai=${cached.ociGenAiRegion}` +
       (cached.ociGenAiChatModel ? ` chat=${cached.ociGenAiChatModel}` : ' chat=disabled') +
       (cached.speechEnabled
-        ? ` speech=${cached.speechRegion}(${cached.speechLanguage})`
+        ? ` speech=${cached.speechRegion}(lang=${cached.speechLanguage})`
         : ' speech=disabled'),
   );
+
+  // Loud warning when Speech is pointed at a region the bucket doesn't
+  // live in. Object Storage is a *regional* service — a Speech job
+  // running in region A cannot read objects in region B, and the
+  // resulting failure (INPUT_LIST_READ_ERROR) is cryptic enough that
+  // we burned ~2h debugging it once. Cheap to print, invaluable to see.
+  if (cached.speechEnabled && cached.speechRegion !== cached.ociRegion) {
+    console.warn(
+      `[corpus] ⚠️  OCI_SPEECH_REGION (${cached.speechRegion}) ≠ bucket region (${cached.ociRegion}). ` +
+        `Object Storage is regional: Speech jobs in ${cached.speechRegion} cannot read a ` +
+        `bucket in ${cached.ociRegion} and will fail at submit time with INPUT_LIST_READ_ERROR. ` +
+        `Either set OCI_SPEECH_REGION=${cached.ociRegion}, move the bucket, or confirm cross-region replication.`,
+    );
+  }
+
   return cached;
 }
 

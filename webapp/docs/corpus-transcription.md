@@ -51,33 +51,35 @@ All knobs are optional. Sensible defaults cover the personal-use case.
 | `CORPUS_MAX_TRANSCRIBE_MINUTES`  | `120`                                   | Defensive cap; 2 h ≈ $1. |
 | `CORPUS_TRANSCRIBE_POLL_MS`      | `30000` (floor 5000)                    | Poller tick. |
 
-IAM / policy requirements (in addition to the base corpus set). **Two
-statements are required** — the user-group one lets *you* submit jobs,
-the service-principal one lets the Speech service actually *read* your
-audio from Object Storage and write the transcript JSON back. Missing
-the second statement is a silent failure: `CreateTranscriptionJob`
-returns a job OCID (success path 1), but the job then flips to
-`FAILED` during pre-processing with the message
-`INPUT_LIST_READ_ERROR: Unable to read the batch list for job <ocid>`.
+### IAM / policy requirements
+
+OCI Speech runs under **delegated user auth** — the job reads/writes
+Object Storage using the *submitter's* identity, not a separate
+service principal. Per the
+[official Speech policies doc](https://docs.oracle.com/en-us/iaas/Content/speech/using/policies.htm),
+the only statements needed are on your API-key user's group. Two
+lines, both scoped to the corpus compartment:
 
 ```text
-# Lets your API-key user group submit / poll / cancel jobs.
+# Submit / poll / cancel Speech jobs.
 Allow group research-corpus-admins to manage ai-service-speech-family in compartment research-corpus
 
-# Lets the Speech service (as its own service principal) read the input
-# audio and write the transcript JSON back to the same bucket.
-# `manage object-family` because we need GET (input), PUT (output), and
-# bucket-level metadata calls. Scoping by `target.bucket.name` looks
-# tempting but BREAKS bucket-level ops (BUCKET_READ, LIST_OBJECTS) where
-# that variable is null at evaluation time, so Speech can't even find
-# the bucket → INPUT_LIST_READ_ERROR. Compartment scope is the correct
-# granularity here; use a dedicated compartment for the corpus bucket
-# to keep the grant tight.
-Allow any-user to manage object-family in compartment research-corpus where request.principal.type='aiservicespeechtranscriptionjob'
+# Read input audio + write transcript JSON back to the same bucket.
+# (Already present as part of the base corpus setup.)
+Allow group research-corpus-admins to manage object-family in compartment research-corpus
 ```
 
 The same `nblm-corpus-app` user / API key used for Storage + GenAI
-signs Speech calls.
+signs Speech calls. **Do not** add a `where request.principal.type=
+'aiservicespeechtranscriptionjob'` grant — there is no such service
+principal in Speech's published auth model; such a statement is a
+harmless no-op that just clutters your policy and misleads future
+debugging sessions.
+
+If you see `INPUT_LIST_READ_ERROR: Unable to read the batch list`
+after a job is submitted, it is **not** a missing-policy symptom — see
+the Troubleshooting section below. The real cause is almost always a
+region mismatch between Speech and the bucket.
 
 ## State machine
 
@@ -148,20 +150,42 @@ webapp/client/src/pages/
 
 ## Output parsing
 
-OCI Speech writes a per-input JSON at:
+OCI Speech writes a per-input JSON at an **observed layout** like:
 
 ```
-<speechOutputPrefix><namespace>_<bucket>_<flattened-object-name>.json
+<speechOutputPrefix>job-<ocidTail>/<namespace>_<bucket>_<inputDir>/<inputBasename>.json
 ```
 
-where slashes in the object name become underscores. `speech.ts`
-reconstructs this path at submit time and uses it at finalise time;
-if the derivation ever misses (a future SDK could rename the
-convention), `fetchTranscriptText` tolerates a 404 by returning
-`null`, which lands the row as `failed` with a clear error message.
+where `<ocidTail>` is everything after the last `.` in the job OCID,
+and each `/` in the input object name becomes a folder level under
+the `job-<ocidTail>/` prefix. This scheme is **not contractual** —
+it has changed across Speech model versions — so we deliberately
+don't try to predict the exact filename at submit time.
 
-We extract `transcriptions[0].transcription` (the model's own
-punctuated join) and fall back to `tokens[].token` if that's missing.
+Instead, at finalise time `findTranscriptObjectName(cfg, jobOcid)`
+in `speech.ts`:
+
+1. Builds the prefix `<speechOutputPrefix>job-<ocidTail>/`.
+2. Calls `listObjects` with that prefix and **no `delimiter`** so the
+   listing is recursive.
+3. Returns the first object whose name ends with `.json` —
+   unambiguous, since each job submits exactly one input.
+
+If nothing is found (Speech reported `SUCCEEDED` but the output
+object is missing — write-permission issue or an upstream race),
+the row is marked `failed` with `output object not found under
+transcripts/job-<ocid>/` so the source of the problem is obvious.
+
+Once the JSON is located, `fetchTranscriptText` extracts
+`transcriptions[0].transcription` (the model's own punctuated join)
+and falls back to `tokens[].token` if that's missing. The finalise
+log line includes the resolved object path so you can correlate with
+the bucket contents at a glance:
+
+```text
+[transcribe] finalised artifact=01KQ... chunks=4 source=transcripts/job-amaaaaaa.../...mp4.json
+```
+
 Diarisation / per-token timing is preserved in the JSON blob but
 deliberately ignored here — we only need clean text for chunking.
 
@@ -188,9 +212,9 @@ webapp. If we ever horizontally scale, add
 | Region doesn't host Speech                         | Submit fails → row → `failed`, error surfaced in UI. |
 | File too long / quota hit                          | Job `FAILED` from Speech → row → `failed` with lifecycle detail. |
 | Submit fails (IAM, 400, network)                   | Caught in `enqueueTranscription`; row → `failed`, error stored. |
-| Service-principal policy missing                   | Submit succeeds + returns OCID; job immediately flips to `FAILED` with `INPUT_LIST_READ_ERROR: Unable to read the batch list`. Poller catches this on the next tick. See the IAM policy block above for the fix. |
+| `OCI_SPEECH_REGION` ≠ `OCI_REGION` (bucket region) | Submit succeeds + returns OCID; job immediately flips to `FAILED` with `INPUT_LIST_READ_ERROR: Unable to read the batch list`. Object Storage is regional — Speech in region A cannot read a bucket in region B. See Troubleshooting. Boot-time warning in `config.ts` now flags this loudly. |
 | Invalid `displayName` (any char outside `[a-zA-Z0-9_-]`) | Submit fails at OCI API level. Not reachable from normal code paths — `sanitiseDisplayName()` in `speech.ts` strips bad chars first. |
-| Output object 404 after SUCCEEDED                  | `fetchTranscriptText` returns null → row → `failed` (`empty transcript`). |
+| Output object missing after SUCCEEDED              | `findTranscriptObjectName` returns null → row → `failed` with `output object not found under transcripts/job-<ocid>/`. |
 | Chunk / embed / insert fails after fetch           | Row → `failed`, error stored. Chunks are NOT half-inserted (we wipe first in a tx). |
 | Poller can't reach OCI Speech for a single row     | That row → `failed` with `poll: <msg>`. Other rows on the tick are unaffected. |
 | Server restart mid-finalise                        | Row stays `transcribing`. Next boot reconciles within 30 s; if Speech says `SUCCEEDED` we re-run finalise (idempotent — chunks are wiped first). |
@@ -236,21 +260,27 @@ For artifacts that predate M7 (or were ingested with Speech disabled):
 
 ```powershell
 cd webapp
-npx tsx server/corpus/transcribe-backfill.ts           # dry-run: shows targets
-npx tsx server/corpus/transcribe-backfill.ts --apply   # submit jobs
-# Also retry previously-failed rows:
-npx tsx server/corpus/transcribe-backfill.ts --apply --include-failed
+npx tsx server/corpus/transcribe-backfill.ts                           # dry-run: shows targets
+npx tsx server/corpus/transcribe-backfill.ts --apply                   # submit new Speech jobs
+npx tsx server/corpus/transcribe-backfill.ts --apply --include-failed  # also retry previously-failed rows
+npx tsx server/corpus/transcribe-backfill.ts --apply --refetch         # re-run finalise only (no Speech resubmit)
 ```
 
-Selection rule:
+### Modes
 
-```sql
-WHERE kind IN ('audio','video')
-  AND (transcription_status IS NULL OR transcription_status IN ('skipped','pending'[,'failed']))
-```
+| Mode | Targets | What it does | When to use |
+|---|---|---|---|
+| *(default)*        | `status IS NULL OR IN ('skipped','pending')`                    | `enqueueTranscription` — fresh submit. | First run on a freshly-enabled Speech setup. |
+| `--include-failed` | Default set + `status='failed'`                                 | `retryTranscription` — reset + new submit. Burns a fresh Whisper job for each row. | Whisper actually failed (bad audio, quota, language hiccup) and you want another attempt. |
+| `--refetch`        | `status='failed' AND transcription_job_ocid IS NOT NULL`        | `refetchTranscription` — verify Speech says `SUCCEEDED`, then re-run finalise against the existing OCID. No Speech resubmit. | Speech succeeded but *our* finaliser tripped (output-filename resolution bug, DB transient, embed outage). Saves \$\$ and 5+ minutes per row. |
 
-The script walks oldest-first and is safe to re-run — `enqueueTranscription`
-is idempotent and won't re-submit rows already `transcribing` or `done`.
+`--refetch` and `--include-failed` are **mutually exclusive** — they
+target overlapping row sets with different semantics; the CLI
+refuses if both are passed.
+
+The script walks oldest-first and is safe to re-run — all three
+paths are idempotent (row-level UPDATE guards + `DELETE FROM
+artifact_chunks WHERE artifact_id = :aid` inside the insert tx).
 
 ## Rollback
 
@@ -269,6 +299,114 @@ Fully reversible:
    ```
    Existing chunks / blobs are untouched — only the transcript-column
    data is lost.
+
+## Troubleshooting
+
+Real failure modes we've hit in production, in order of frequency.
+Each entry gives the symptom (what you see), the root cause, and the
+fix. All of these wasted significant debugging time the first time
+around — writing them down so the next-time investigation is minutes,
+not hours.
+
+### `INPUT_LIST_READ_ERROR: Unable to read the batch list for job <ocid>`
+
+**Symptom.** Submit succeeds and returns a valid job OCID. The
+poller's first tick on the job sees `lifecycleState=FAILED` with this
+message. Row lands at `failed`. Every new submit does the same thing.
+
+**Root cause.** `OCI_SPEECH_REGION` doesn't match the bucket region
+(`OCI_REGION`). Object Storage is a regional service — a Speech job
+running in Osaka cannot read a bucket in Tokyo, period. The Speech
+service reports this as a generic "batch list unreadable" rather than
+something obvious like "wrong region", which is what makes it painful.
+
+**Fix.** Set `OCI_SPEECH_REGION` to the bucket's region. On boot,
+`config.ts` now prints a loud `⚠️` warning when these two differ —
+don't ignore it.
+
+**What it is *not*.** Missing IAM policy on a Speech service principal.
+There is no such service principal — Speech uses delegated user auth.
+Any policy statement with `where request.principal.type=
+'aiservicespeechtranscriptionjob'` is a no-op and can be deleted.
+
+### Job submit fails at 400 with a `displayName` validation error
+
+**Symptom.** `enqueueTranscription` throws during the submit call;
+row goes straight to `failed` with an OCI 400 about invalid characters
+in `displayName`. Most common with non-ASCII video titles (Chinese
+comma `：`, full-width parens, emoji).
+
+**Root cause.** OCI Speech's `displayName` only accepts
+`[a-zA-Z0-9_-]`. We use the artifact title as the basis of the name.
+
+**Fix.** Already handled — `sanitiseDisplayName()` in `speech.ts`
+strips disallowed chars before submit, so this shouldn't be reachable
+from normal code paths. If you see it, check that callers of
+`submitTranscriptionJob` aren't bypassing the helper.
+
+### `empty transcript (model returned no text)` on a row you know succeeded
+
+**Symptom.** Terminal log from `--refetch` says `chunks=N source=...`
+with a real object path. Library UI shows the row as `failed` with
+this error. Feels like a race.
+
+**Root cause.** Two finalisers ran concurrently on the same row —
+typically because `node --watch` on Windows didn't fully reload the
+poller module after a code change, so the webapp-side poller is
+running *old* code while the CLI is running *new* code. The old
+poller hits its old output-filename guess, 404s, marks failed. Races
+the new code's successful write. Last UPDATE wins; sometimes old wins.
+
+**Fix.** Hard-restart the dev server (`Ctrl-C` the whole `npm run
+webapp:dev`, then rerun). If even that doesn't clear it:
+`Get-Process node | Stop-Process -Force`, then rerun.
+
+**Prevention going forward.** In principle we could guard finalise
+with a `WHERE transcription_status='transcribing' AND
+transcription_job_ocid=:expected` on the UPDATE so only the first
+writer wins. Not implemented yet — the hard-restart remediation is
+cheap enough that adding complexity hasn't earned its keep.
+
+### Library row shows `CHUNKS=0` and `Transcription failed` but search/chat work
+
+**Symptom.** `/corpus` search returns hits from the transcribed video
+with real transcript text. Yet the Library page's row shows red `✗`
+and CHUNKS=0 for that same artifact.
+
+**Root cause.** Stale client-side cache. The Library's per-row data
+and the detail-drawer's per-id data were fetched before the retry /
+refetch completed; React's query cache is still serving the old
+response. The underlying DB row is `done` and the chunks are indexed
+(hence why search can find them).
+
+**Fix.** Hard-refresh the Library page (`Ctrl+F5`). If that doesn't
+clear it, `curl http://localhost:7860/api/corpus/artifacts/<id>` to
+see ground truth; if the API says `done` and the UI says `failed`,
+it's purely a client-cache issue. A proper fix (cache invalidation
+on status change) is on the [Future work](#future-work) list.
+
+## Known limitations
+
+- **Transcript may be truncated on long videos.** Observed: a ~30 min
+  video produced ~4,300 characters of transcript (~4 chunks), when
+  linear speech at that length would normally yield 15,000–25,000
+  characters. Likely cause is a per-job duration cap on the
+  `WHISPER_MEDIUM` tier in OCI Speech — not documented in a single
+  obvious place, and the output JSON gives no truncation signal.
+  Search and chat still work on whatever content *was* transcribed,
+  but long-form sources aren't fully covered. Workarounds under
+  investigation:
+  1. Upgrade to `WHISPER_LARGE_V2` (request-only access from Oracle).
+  2. Pre-chunk audio with ffmpeg into 10-minute segments and submit
+     one Speech job per segment, merging transcripts in our finaliser.
+  3. Set `OCI_SPEECH_LANGUAGE` explicitly instead of `auto` — mixed-
+     language videos might confuse the detector and trigger early
+     giving-up.
+- **Multi-replica safety not implemented.** Single-process assumption
+  throughout the poller. Scaling out needs `SELECT ... FOR UPDATE
+  SKIP LOCKED` on the `transcribing` scan; flagged but not built.
+- **Windows `node --watch` + tsx reload flakiness.** See the stale-
+  cache troubleshooting entry above. Not ours to fix; just be aware.
 
 ## Future work
 
