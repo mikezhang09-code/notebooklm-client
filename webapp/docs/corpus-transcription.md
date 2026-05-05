@@ -51,10 +51,24 @@ All knobs are optional. Sensible defaults cover the personal-use case.
 | `CORPUS_MAX_TRANSCRIBE_MINUTES`  | `120`                                   | Defensive cap; 2 h ≈ $1. |
 | `CORPUS_TRANSCRIBE_POLL_MS`      | `30000` (floor 5000)                    | Poller tick. |
 
-IAM / policy requirements (in addition to the base corpus set):
+IAM / policy requirements (in addition to the base corpus set). **Two
+statements are required** — the user-group one lets *you* submit jobs,
+the service-principal one lets the Speech service actually *read* your
+audio from Object Storage and write the transcript JSON back. Missing
+the second statement is a silent failure: `CreateTranscriptionJob`
+returns a job OCID (success path 1), but the job then flips to
+`FAILED` during pre-processing with the message
+`INPUT_LIST_READ_ERROR: Unable to read the batch list for job <ocid>`.
 
 ```text
+# Lets your API-key user group submit / poll / cancel jobs.
 Allow group research-corpus-admins to manage ai-service-speech-family in compartment research-corpus
+
+# Lets the Speech service (as its own service principal) read the input
+# audio and write the transcript JSON back to the same bucket.
+# `manage` because we need both GET (input) and PUT (output); scoped to
+# a single bucket so no other buckets in the compartment are exposed.
+Allow any-user to manage object-family in compartment research-corpus where ALL {request.principal.type='aiservicespeechtranscriptionjob', target.bucket.name='nblm-corpus'}
 ```
 
 The same `nblm-corpus-app` user / API key used for Storage + GenAI
@@ -169,6 +183,8 @@ webapp. If we ever horizontally scale, add
 | Region doesn't host Speech                         | Submit fails → row → `failed`, error surfaced in UI. |
 | File too long / quota hit                          | Job `FAILED` from Speech → row → `failed` with lifecycle detail. |
 | Submit fails (IAM, 400, network)                   | Caught in `enqueueTranscription`; row → `failed`, error stored. |
+| Service-principal policy missing                   | Submit succeeds + returns OCID; job immediately flips to `FAILED` with `INPUT_LIST_READ_ERROR: Unable to read the batch list`. Poller catches this on the next tick. See the IAM policy block above for the fix. |
+| Invalid `displayName` (any char outside `[a-zA-Z0-9_-]`) | Submit fails at OCI API level. Not reachable from normal code paths — `sanitiseDisplayName()` in `speech.ts` strips bad chars first. |
 | Output object 404 after SUCCEEDED                  | `fetchTranscriptText` returns null → row → `failed` (`empty transcript`). |
 | Chunk / embed / insert fails after fetch           | Row → `failed`, error stored. Chunks are NOT half-inserted (we wipe first in a tx). |
 | Poller can't reach OCI Speech for a single row     | That row → `failed` with `poll: <msg>`. Other rows on the tick are unaffected. |
