@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ARTIFACT_KINDS,
@@ -166,6 +166,24 @@ export default function CorpusLibraryPage() {
     }
   }, [kind, origin, offset]);
 
+  // Wrapped in useCallback so the auto-refresh effect below can list it as
+  // a stable dep without resubscribing every render (which would clear
+  // the interval before each tick).
+  const refreshDetail = useCallback(
+    async (id: string) => {
+      setDetailBusy(true);
+      try {
+        const d = await getArtifact(id);
+        setDetail(d);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDetailBusy(false);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -187,13 +205,20 @@ export default function CorpusLibraryPage() {
     );
   }, [data]);
 
+  // While anything is in flight, tick both the list AND the open detail
+  // drawer (if any). Without the second call, a user staring at the
+  // drawer of a transcribing row would see the list flip to 'done' but
+  // the drawer stuck on 'transcribing' until they clicked away — the
+  // exact 'looks failed but data is fine' confusion that wasted time
+  // during M7 debugging. See docs/corpus-transcription.md → Troubleshooting.
   useEffect(() => {
     if (!hasActiveTranscriptions) return;
     const t = setInterval(() => {
       void load();
+      if (selectedId) void refreshDetail(selectedId);
     }, 15000);
     return () => clearInterval(t);
-  }, [hasActiveTranscriptions, load]);
+  }, [hasActiveTranscriptions, load, selectedId, refreshDetail]);
 
   const filteredRows = useMemo(() => {
     if (!data) return [];
@@ -254,18 +279,6 @@ export default function CorpusLibraryPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBulkBusy(false);
-    }
-  }
-
-  async function refreshDetail(id: string) {
-    setDetailBusy(true);
-    try {
-      const d = await getArtifact(id);
-      setDetail(d);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDetailBusy(false);
     }
   }
 
@@ -639,15 +652,40 @@ function DetailPanel({
   // ── M7: transcription retry ────────────────────────────────────────
   const [transcribeBusy, setTranscribeBusy] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
+  // Track unmount so the burst-polling timeouts below don't fire
+  // setState on a torn-down component (the React warning) or refetch
+  // a row the user no longer cares about.
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
   async function handleTranscribe() {
     setTranscribeBusy(true);
     setTranscribeError(null);
     try {
       await transcribeArtifact(id);
-      // Poll the detail row every 5s for up to ~2 minutes, or until the
-      // status leaves 'pending'/'transcribing'. onMutated refreshes the
-      // list (which owns the 15s auto-refresh for in-flight rows).
+      // The /transcribe endpoint returns 202 immediately; the actual
+      // status flip from 'failed'/'skipped' → 'pending' → 'transcribing'
+      // happens asynchronously on the server side a moment later. The
+      // parent's 15s auto-refresh only kicks in once it sees a row in
+      // a transient state — chicken-and-egg if we don't refresh fast
+      // enough to catch the flip.
+      //
+      // So: fire onMutated immediately and again at 1s / 3s / 7s. By
+      // the time the third refresh lands, the row is virtually
+      // guaranteed to be in 'transcribing' (Speech submit takes ~1–2s),
+      // and the parent's interval owns the long tail until SUCCEEDED
+      // or FAILED. Capped at 7s — if Speech is still taking longer
+      // than that to accept the job, the parent's 15s tick covers it.
       onMutated();
+      for (const ms of [1000, 3000, 7000]) {
+        window.setTimeout(() => {
+          if (mountedRef.current) onMutated();
+        }, ms);
+      }
     } catch (err) {
       setTranscribeError(err instanceof Error ? err.message : String(err));
     } finally {
