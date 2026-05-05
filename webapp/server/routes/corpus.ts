@@ -7,6 +7,7 @@
  * M5: PATCH /artifacts/:id (title/tags), DELETE /artifacts/:id,
  *     POST /artifacts/:id/share (long-lived PAR)
  * M6: POST /chat (RAG over corpus)
+ * M7: POST /artifacts/:id/transcribe (retry transcription for audio/video)
  */
 
 import { Router } from 'express';
@@ -22,6 +23,7 @@ import {
   searchCorpus,
   chatCorpus,
   type ChatTurn,
+  retryTranscription,
 } from '../corpus/index.js';
 import {
   ingestArtifact,
@@ -205,6 +207,8 @@ corpusRouter.get(
         SELECT id, kind, origin, title, notebook_id, artifact_id,
                bucket, object_name, mime_type, size_bytes, tags, metadata,
                created_at,
+               transcription_status, transcription_job_ocid,
+               transcribed_at, transcription_error,
                (SELECT COUNT(*) FROM artifact_chunks c WHERE c.artifact_id = a.id) AS chunk_count
           FROM artifacts a
           ${where}
@@ -253,7 +257,9 @@ corpusRouter.get(
     const row = await withConnection(cfg, async (conn) => {
       const result = await conn.execute<Record<string, unknown>>(
         `SELECT id, kind, origin, title, notebook_id, artifact_id, bucket,
-                object_name, mime_type, size_bytes, tags, metadata, created_at
+                object_name, mime_type, size_bytes, tags, metadata, created_at,
+                transcription_status, transcription_job_ocid,
+                transcribed_at, transcription_error
            FROM artifacts WHERE id = :id`,
         { id },
         { outFormat: oracledb.OUT_FORMAT_OBJECT },
@@ -605,5 +611,74 @@ corpusRouter.post(
       ttlHours,
       expiresAt: par.expiresAt.toISOString(),
     });
+  }),
+);
+
+/**
+ * POST /api/corpus/artifacts/:id/transcribe   (M7)
+ *
+ * Manually re-run transcription for an audio/video artifact. Used by the
+ * "Retry" button in the Library UI when a previous job failed or when the
+ * row was skipped. Safe to call on rows already `done` — will be a no-op
+ * at the enqueue level (handled inside `retryTranscription`).
+ *
+ * Responds 200 immediately with `{ status: 'queued' }`; the poller picks
+ * the row up on its next tick. Errors are surfaced via the artifact row's
+ * `transcription_status = 'failed'` + `transcription_error`, not here.
+ */
+corpusRouter.post(
+  '/artifacts/:id/transcribe',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    if (!cfg.speechEnabled) {
+      res
+        .status(503)
+        .json({ error: 'transcription is disabled (set OCI_SPEECH_ENABLED=true)' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    // Verify the row exists + is audio/video up front, so we can give a
+    // useful 4xx instead of a silent `skipped` update.
+    const row = await withConnection(cfg, async (conn) => {
+      const r = await conn.execute<{ KIND: string }>(
+        `SELECT kind FROM artifacts WHERE id = :id`,
+        { id },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      return r.rows?.[0];
+    });
+    if (!row) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+    if (row.KIND !== 'audio' && row.KIND !== 'video') {
+      res.status(400).json({
+        error: `kind "${row.KIND}" is not transcribable (only audio/video)`,
+      });
+      return;
+    }
+
+    // Fire the enqueue but don't block the HTTP response — submit +
+    // status update can take a second or two and the client just wants
+    // to know we accepted the request.
+    void (async () => {
+      try {
+        await retryTranscription(cfg, id);
+      } catch (err) {
+        console.warn(
+          `[corpus] /transcribe retry failed for ${id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
+    res.status(202).json({ id, status: 'queued' });
   }),
 );

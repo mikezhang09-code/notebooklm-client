@@ -211,13 +211,21 @@ export async function ingestArtifactWith(
   //    re-read the winning row, and return it.
   try {
     await withConnection(cfg, async (conn) => {
+    // M7: seed transcription_status='pending' for audio/video so the UI
+    // has something to render immediately; the ingest hook flips it to
+    // 'transcribing' after submitting the OCI Speech job.
+    const isAudioVideo = input.kind === 'audio' || input.kind === 'video';
+    const initialTrxStatus = isAudioVideo ? 'pending' : null;
+
     await conn.execute(
       `INSERT INTO artifacts
          (id, kind, origin, title, notebook_id, artifact_id,
-          bucket, object_name, mime_type, size_bytes, tags, metadata)
+          bucket, object_name, mime_type, size_bytes, tags, metadata,
+          transcription_status)
        VALUES
          (:a_id, :a_kind, :a_origin, :a_title, :a_nb, :a_aid,
-          :a_bucket, :a_obj, :a_mime, :a_sz, :a_tags, :a_meta)`,
+          :a_bucket, :a_obj, :a_mime, :a_sz, :a_tags, :a_meta,
+          :a_trx)`,
       {
         a_id: id,
         a_kind: input.kind,
@@ -231,6 +239,7 @@ export async function ingestArtifactWith(
         a_sz: input.buffer.length,
         a_tags: JSON.stringify(input.tags ?? []),
         a_meta: JSON.stringify(input.metadata ?? {}),
+        a_trx: initialTrxStatus,
       },
       { autoCommit: false },
     );
@@ -301,6 +310,25 @@ export async function ingestArtifactWith(
       }
     }
     throw err;
+  }
+
+  // M7: fire-and-forget transcription enqueue for audio/video. Any error
+  // inside enqueueTranscription updates the row to 'failed'; we don't want
+  // ingest itself to fail just because Speech is temporarily unavailable.
+  if (input.kind === 'audio' || input.kind === 'video') {
+    // Dynamic import avoids a circular-import risk (transcribe.ts imports
+    // from ./oci/* which ingest.ts also imports).
+    void (async () => {
+      try {
+        const { enqueueTranscription } = await import('./transcribe.js');
+        await enqueueTranscription(cfg, id);
+      } catch (err) {
+        console.warn(
+          `[ingest] transcription enqueue failed for ${id}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
   }
 
   return {

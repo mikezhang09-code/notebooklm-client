@@ -25,6 +25,26 @@ export type {
   CohereChatOutcome,
 } from './oci/genai.js';
 
+export {
+  speechHealthCheck,
+  submitTranscriptionJob,
+  getTranscriptionJob,
+  cancelTranscriptionJob,
+  fetchTranscriptText,
+} from './oci/speech.js';
+export type {
+  TranscriptionJobStatus,
+  TranscriptionJobView,
+} from './oci/speech.js';
+
+export {
+  enqueueTranscription,
+  retryTranscription,
+  reconcileOnce,
+  startTranscriptionPoller,
+} from './transcribe.js';
+export type { TranscriptionStatus } from './transcribe.js';
+
 export { searchCorpus } from './search.js';
 export type {
   SearchOptions,
@@ -46,6 +66,7 @@ import { getCorpusConfig } from './config.js';
 import { dbHealthCheck } from './oci/db.js';
 import { storageHealthCheck } from './oci/storage.js';
 import { genaiHealthCheck } from './oci/genai.js';
+import { speechHealthCheck } from './oci/speech.js';
 
 export interface CorpusHealth {
   enabled: boolean;
@@ -56,12 +77,25 @@ export interface CorpusHealth {
   genai: { ok: boolean; model?: string; dimensions?: number; error?: string };
   /** RAG chat is gated on a separate (optional) chat-model env var. */
   chat: { enabled: boolean; model?: string };
+  /**
+   * M7 — OCI Speech / transcription. Enabled when `OCI_SPEECH_ENABLED`
+   * is not set to a falsy value AND the Speech service responded to a
+   * listTranscriptionJobs probe. `ok` can be false with `enabled: true`
+   * if the Speech region is mis-configured or IAM is missing.
+   */
+  transcription: {
+    enabled: boolean;
+    ok?: boolean;
+    region?: string;
+    language?: string;
+    error?: string;
+  };
 }
 
 /**
- * End-to-end smoke test of all three OCI services. Runs the three checks
- * in parallel — if the user's network or IAM is broken we still get a
- * full picture in one round-trip.
+ * End-to-end smoke test of all OCI services. Runs the checks in parallel —
+ * if the user's network or IAM is broken we still get a full picture in
+ * one round-trip.
  */
 export async function corpusHealth(): Promise<CorpusHealth> {
   const cfg = await getCorpusConfig();
@@ -72,12 +106,23 @@ export async function corpusHealth(): Promise<CorpusHealth> {
       storage: { ok: false, error: 'corpus disabled' },
       genai: { ok: false, error: 'corpus disabled' },
       chat: { enabled: false },
+      transcription: { enabled: false },
     };
   }
-  const [db, storage, genai] = await Promise.all([
+  const [db, storage, genai, speech] = await Promise.all([
     dbHealthCheck(cfg),
     storageHealthCheck(cfg),
     genaiHealthCheck(cfg),
+    // Don't probe Speech if the user explicitly disabled it — saves an
+    // IAM round-trip and keeps /api/corpus/health fast.
+    cfg.speechEnabled
+      ? speechHealthCheck(cfg)
+      : Promise.resolve({
+          ok: false,
+          region: undefined as string | undefined,
+          language: undefined as string | undefined,
+          error: 'OCI_SPEECH_ENABLED=false',
+        }),
   ]);
   return {
     enabled: true,
@@ -89,5 +134,12 @@ export async function corpusHealth(): Promise<CorpusHealth> {
     chat: cfg.ociGenAiChatModel
       ? { enabled: true, model: cfg.ociGenAiChatModel }
       : { enabled: false },
+    transcription: {
+      enabled: cfg.speechEnabled,
+      ok: speech.ok,
+      region: speech.region ?? cfg.speechRegion,
+      language: speech.language ?? cfg.speechLanguage,
+      error: speech.error,
+    },
   };
 }

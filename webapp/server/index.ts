@@ -20,6 +20,7 @@ import { generateRouter } from './routes/generate.js';
 import { analyzeRouter } from './routes/analyze.js';
 import { corpusRouter } from './routes/corpus.js';
 import { errorHandler } from './lib/handler.js';
+import { getCorpusConfig, startTranscriptionPoller } from './corpus/index.js';
 
 const PORT = Number(process.env['PORT'] ?? 7860);
 const HOST = process.env['HOST'] ?? '0.0.0.0';
@@ -84,4 +85,18 @@ if (clientDir) {
 
 app.listen(PORT, HOST, () => {
   console.log(`notebooklm-webapp listening on http://${HOST}:${PORT}`);
+  // M7: start the transcription poller once the server is listening.
+  // Fire-and-forget — a disabled corpus (or Speech) turns this into a
+  // no-op. We log the outcome so the user can spot config issues.
+  void (async () => {
+    try {
+      const cfg = await getCorpusConfig();
+      if (cfg) startTranscriptionPoller(cfg);
+    } catch (err) {
+      console.warn(
+        '[boot] transcription poller did not start:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
 });
