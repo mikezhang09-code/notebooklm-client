@@ -10,7 +10,12 @@ export { getCorpusConfig } from './config.js';
 export type { CorpusConfig } from './config.js';
 
 export { dbHealthCheck, withConnection, closeDbPool } from './oci/db.js';
-export { storageHealthCheck, putObject, createReadPar } from './oci/storage.js';
+export {
+  storageHealthCheck,
+  putObject,
+  createReadPar,
+  deleteObject,
+} from './oci/storage.js';
 export { genaiHealthCheck, embedTexts } from './oci/genai.js';
 export type { EmbedInputType } from './oci/genai.js';
 

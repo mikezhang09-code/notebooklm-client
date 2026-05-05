@@ -61,6 +61,29 @@ export async function putObject(
 }
 
 /**
+ * Delete a single object from the bucket. Idempotent — a 404 from OCI
+ * (object already gone) is treated as success so retries are safe.
+ */
+export async function deleteObject(
+  cfg: CorpusConfig,
+  objectName: string,
+): Promise<{ deleted: boolean }> {
+  const client = await getStorageClient(cfg);
+  try {
+    await client.deleteObject({
+      namespaceName: cfg.ociNamespace,
+      bucketName: cfg.ociBucket,
+      objectName,
+    });
+    return { deleted: true };
+  } catch (err) {
+    const status = (err as { statusCode?: number })?.statusCode;
+    if (status === 404) return { deleted: false };
+    throw err;
+  }
+}
+
+/**
  * Mint a short-lived, object-scoped pre-authenticated request (PAR) URL.
  * Anyone with the URL can read this single object until `expiresAt`.
  */

@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ARTIFACT_KINDS,
+  deleteArtifact,
   getArtifact,
   listArtifacts,
+  updateArtifact,
   type ArtifactDetail,
   type ArtifactListItem,
   type ArtifactListResponse,
   type ArtifactKind,
 } from '../lib/corpus';
+import { ShareControls } from './CorpusPage';
 
 /**
  * /corpus/library — paginated, filterable table of every ingested artifact.
@@ -76,6 +79,10 @@ export default function CorpusLibraryPage() {
   const [detail, setDetail] = useState<ArtifactDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
 
+  // Bulk-selection state for the table (independent of the detail-pane focus).
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -110,9 +117,62 @@ export default function CorpusLibraryPage() {
     return data.items.filter((a) => a.TITLE.toLowerCase().includes(needle));
   }, [data, titleFilter]);
 
-  async function handleSelect(id: string) {
-    setSelectedId(id);
-    setDetail(null);
+  function toggleChecked(id: string) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllVisible() {
+    setChecked((prev) => {
+      const allVisibleSelected = filteredRows.every((r) => prev.has(r.ID));
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const r of filteredRows) next.delete(r.ID);
+      } else {
+        for (const r of filteredRows) next.add(r.ID);
+      }
+      return next;
+    });
+  }
+
+  async function deleteIds(ids: string[]) {
+    if (ids.length === 0) return;
+    const ok = window.confirm(
+      ids.length === 1
+        ? 'Delete this artifact, its chunks, and the underlying blob?'
+        : `Delete ${ids.length} artifacts (chunks + blobs)? This cannot be undone.`,
+    );
+    if (!ok) return;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      // Sequential to keep the load on Object Storage / DB predictable.
+      // For our scale (dozens, not thousands) this is fine.
+      for (const id of ids) {
+        await deleteArtifact(id);
+      }
+      setChecked((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      if (selectedId && ids.includes(selectedId)) {
+        setSelectedId(null);
+        setDetail(null);
+      }
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function refreshDetail(id: string) {
     setDetailBusy(true);
     try {
       const d = await getArtifact(id);
@@ -122,6 +182,12 @@ export default function CorpusLibraryPage() {
     } finally {
       setDetailBusy(false);
     }
+  }
+
+  async function handleSelect(id: string) {
+    setSelectedId(id);
+    setDetail(null);
+    await refreshDetail(id);
   }
 
   const total = data?.total ?? 0;
@@ -135,10 +201,23 @@ export default function CorpusLibraryPage() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Corpus library</h1>
             <p className="text-sm text-slate-600">
-              Every artifact you've ingested. {total.toLocaleString()} total.
+              Every artifact you've ingested. {total.toLocaleString()} total
+              {checked.size > 0 ? ` · ${checked.size} selected` : ''}.
             </p>
           </div>
           <div className="flex gap-2">
+            {checked.size > 0 && (
+              <button
+                type="button"
+                className="btn-danger text-sm"
+                disabled={bulkBusy}
+                onClick={() => void deleteIds(Array.from(checked))}
+              >
+                {bulkBusy
+                  ? 'Deleting…'
+                  : `Delete selected (${checked.size})`}
+              </button>
+            )}
             <Link to="/corpus/upload" className="btn-primary text-sm">
               Upload
             </Link>
@@ -217,9 +296,20 @@ export default function CorpusLibraryPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] text-sm">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                   <tr>
+                    <th className="w-8 px-2 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label="Toggle select all visible"
+                        checked={
+                          filteredRows.length > 0 &&
+                          filteredRows.every((r) => checked.has(r.ID))
+                        }
+                        onChange={toggleAllVisible}
+                      />
+                    </th>
                     <th className="px-3 py-2">Title</th>
                     <th className="px-3 py-2">Kind</th>
                     <th className="px-3 py-2">Origin</th>
@@ -232,6 +322,7 @@ export default function CorpusLibraryPage() {
                   {filteredRows.map((a: ArtifactListItem) => {
                     const tagList = parseTags(a.TAGS);
                     const isSelected = a.ID === selectedId;
+                    const isChecked = checked.has(a.ID);
                     return (
                       <tr
                         key={a.ID}
@@ -240,24 +331,43 @@ export default function CorpusLibraryPage() {
                           isSelected ? 'bg-brand-50' : ''
                         }`}
                       >
+                        <td
+                          className="px-2 py-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${a.TITLE}`}
+                            checked={isChecked}
+                            onChange={() => toggleChecked(a.ID)}
+                          />
+                        </td>
                         <td className="px-3 py-2">
                           <div className="font-medium text-slate-900">
                             {a.TITLE}
                           </div>
-                          {tagList.length > 0 && (
-                            <div className="mt-0.5 flex flex-wrap gap-1">
-                              {tagList.slice(0, 4).map((t) => (
-                                <span key={t} className="badge">
-                                  #{t}
-                                </span>
-                              ))}
-                              {tagList.length > 4 && (
-                                <span className="badge">
-                                  +{tagList.length - 4}
-                                </span>
-                              )}
-                            </div>
-                          )}
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                            {a.NOTEBOOK_ID && (
+                              <Link
+                                to={`/library/${a.NOTEBOOK_ID}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-0.5 rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700 hover:bg-brand-100 hover:text-brand-800"
+                                title={`From notebook ${a.NOTEBOOK_ID}`}
+                              >
+                                <span aria-hidden>📒</span>notebook
+                              </Link>
+                            )}
+                            {tagList.slice(0, 4).map((t) => (
+                              <span key={t} className="badge">
+                                #{t}
+                              </span>
+                            ))}
+                            {tagList.length > 4 && (
+                              <span className="badge">
+                                +{tagList.length - 4}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <span className="badge-brand">
@@ -316,16 +426,26 @@ export default function CorpusLibraryPage() {
       <aside className="space-y-3">
         {selectedId ? (
           <DetailPanel
+            id={selectedId}
             detail={detail}
             busy={detailBusy}
             onClose={() => {
               setSelectedId(null);
               setDetail(null);
             }}
+            onMutated={() => {
+              void refreshDetail(selectedId);
+              void load();
+            }}
+            onDeleted={() => {
+              setSelectedId(null);
+              setDetail(null);
+              void load();
+            }}
           />
         ) : (
           <div className="card text-sm text-slate-600">
-            Click a row to see its metadata and get a 1-hour download link.
+            Click a row to see its metadata, edit, share, or delete it.
           </div>
         )}
       </aside>
@@ -334,19 +454,85 @@ export default function CorpusLibraryPage() {
 }
 
 function DetailPanel({
+  id,
   detail,
   busy,
   onClose,
+  onMutated,
+  onDeleted,
 }: {
+  id: string;
   detail: ArtifactDetail | null;
   busy: boolean;
   onClose: () => void;
+  onMutated: () => void;
+  onDeleted: () => void;
 }): JSX.Element {
   const a = (detail?.artifact ?? {}) as Record<string, unknown>;
   const get = (...keys: string[]): unknown => {
     for (const k of keys) if (a[k] != null) return a[k];
     return undefined;
   };
+  const notebookId =
+    typeof get('NOTEBOOK_ID', 'notebookId') === 'string'
+      ? (get('NOTEBOOK_ID', 'notebookId') as string)
+      : null;
+  const md =
+    (get('METADATA', 'metadata') as Record<string, unknown> | undefined) ?? {};
+  const notebookTitle =
+    typeof md['notebookTitle'] === 'string'
+      ? (md['notebookTitle'] as string)
+      : null;
+
+  // ── Editing state (title + tags) ────────────────────────────────────
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editTags, setEditTags] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  function startEdit() {
+    const currentTags = parseTags(get('TAGS', 'tags'));
+    setEditTitle(String(get('TITLE', 'title') ?? ''));
+    setEditTags(currentTags.join(', '));
+    setEditing(true);
+    setEditError(null);
+  }
+
+  async function saveEdit() {
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      const tags = editTags
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .filter((t) => t.length > 0 && t.length <= 32);
+      await updateArtifact(id, { title: editTitle.trim(), tags });
+      setEditing(false);
+      onMutated();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  // ── Single-row delete ──────────────────────────────────────────────
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  async function handleDelete() {
+    if (!window.confirm('Delete this artifact, its chunks, and the underlying blob?')) {
+      return;
+    }
+    setDeleteBusy(true);
+    try {
+      await deleteArtifact(id);
+      onDeleted();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : String(err));
+      setDeleteBusy(false);
+    }
+  }
+
   return (
     <div className="card space-y-3">
       <div className="flex items-start justify-between">
@@ -355,7 +541,7 @@ function DetailPanel({
             Artifact
           </div>
           <div className="truncate font-mono text-xs text-slate-600">
-            {String(get('ID', 'id') ?? '')}
+            {String(get('ID', 'id') ?? id)}
           </div>
         </div>
         <button type="button" className="btn-ghost text-xs" onClick={onClose}>
@@ -365,7 +551,7 @@ function DetailPanel({
 
       {busy && <div className="text-sm text-slate-500">Loading…</div>}
 
-      {detail && (
+      {detail && !editing && (
         <>
           <dl className="grid grid-cols-[80px_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
             {(
@@ -401,20 +587,132 @@ function DetailPanel({
               </div>
             ))}
           </dl>
-          <div className="border-t border-slate-200 pt-3">
+
+          {/* Tags */}
+          {(() => {
+            const tags = parseTags(get('TAGS', 'tags'));
+            return (
+              <div className="text-xs">
+                <div className="text-slate-500">Tags</div>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {tags.length === 0 ? (
+                    <span className="text-slate-400">none</span>
+                  ) : (
+                    tags.map((t) => (
+                      <span key={t} className="badge">
+                        #{t}
+                      </span>
+                    ))
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Notebook cross-link */}
+          {notebookId && (
+            <div className="rounded-md bg-slate-50 px-2 py-1.5 text-xs">
+              <div className="text-slate-500">Originating notebook</div>
+              <Link
+                to={`/library/${notebookId}`}
+                className="inline-flex items-center gap-1 text-brand-700 hover:underline"
+              >
+                <span aria-hidden>📒</span>
+                {notebookTitle ?? notebookId}
+                <span aria-hidden>↗</span>
+              </Link>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-3">
             <a
               href={detail.downloadUrl}
               target="_blank"
               rel="noreferrer"
-              className="btn-primary w-full"
+              className="btn-primary text-xs"
             >
               Download blob ↗
             </a>
-            <p className="mt-1 text-[11px] text-slate-500">
-              PAR valid until {formatDate(detail.expiresAt)}
-            </p>
+            <button
+              type="button"
+              className="btn-secondary text-xs"
+              onClick={startEdit}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className="btn-danger text-xs"
+              disabled={deleteBusy}
+              onClick={() => void handleDelete()}
+            >
+              {deleteBusy ? 'Deleting…' : 'Delete'}
+            </button>
           </div>
+          <p className="text-[11px] text-slate-500">
+            PAR valid until {formatDate(detail.expiresAt)}
+          </p>
+          <ShareControls id={id} />
+          {editError && (
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
+              {editError}
+            </div>
+          )}
         </>
+      )}
+
+      {detail && editing && (
+        <div className="space-y-3">
+          <div>
+            <label className="label" htmlFor="edit-title">
+              Title
+            </label>
+            <input
+              id="edit-title"
+              className="input"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              maxLength={512}
+              disabled={editBusy}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="edit-tags">
+              Tags <span className="text-slate-400">(comma-separated)</span>
+            </label>
+            <input
+              id="edit-tags"
+              className="input"
+              value={editTags}
+              onChange={(e) => setEditTags(e.target.value)}
+              disabled={editBusy}
+              placeholder="q2-earnings, tencent"
+            />
+          </div>
+          {editError && (
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
+              {editError}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn-primary text-xs"
+              disabled={editBusy || editTitle.trim().length === 0}
+              onClick={() => void saveEdit()}
+            >
+              {editBusy ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={editBusy}
+              onClick={() => setEditing(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

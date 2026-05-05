@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   ARTIFACT_KINDS,
   getArtifact,
   getCorpusHealth,
   searchCorpus,
+  shareArtifact,
   type ArtifactDetail,
   type ArtifactKind,
   type CorpusHealth,
   type SearchHit,
   type SearchResult,
+  type ShareResult,
 } from '../lib/corpus';
 
 /**
@@ -330,11 +333,22 @@ function HitCard({
 }): JSX.Element {
   const a = hit.artifact;
   const dl = distanceLabel(hit.bestDistance);
+  const notebookTitle =
+    typeof a.metadata?.['notebookTitle'] === 'string'
+      ? (a.metadata['notebookTitle'] as string)
+      : null;
   return (
-    <button
-      type="button"
+    <div
       onClick={onSelect}
-      className={`w-full rounded-lg border bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 ${
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      className={`w-full cursor-pointer rounded-lg border bg-white p-4 text-left shadow-sm transition hover:bg-slate-50 ${
         isSelected ? 'border-brand-500 ring-2 ring-brand-200' : 'border-slate-200'
       }`}
     >
@@ -350,19 +364,35 @@ function HitCard({
           <h3 className="mt-1 truncate text-base font-semibold text-slate-900">
             {a.title}
           </h3>
-          <div className="mt-0.5 text-xs text-slate-500">
-            {formatDate(a.createdAt)} · {formatBytes(a.sizeBytes)} ·{' '}
-            {hit.snippets.length} matching chunk{hit.snippets.length === 1 ? '' : 's'}
-            {a.tags.length > 0 && (
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-1 text-xs text-slate-500">
+            <span>{formatDate(a.createdAt)}</span>
+            <span>·</span>
+            <span>{formatBytes(a.sizeBytes)}</span>
+            <span>·</span>
+            <span>
+              {hit.snippets.length} matching chunk
+              {hit.snippets.length === 1 ? '' : 's'}
+            </span>
+            {a.notebookId && (
               <>
-                {' · '}
-                {a.tags.map((t) => (
-                  <span key={t} className="badge ml-1">
-                    #{t}
-                  </span>
-                ))}
+                <span>·</span>
+                <Link
+                  to={`/library/${a.notebookId}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-xs text-slate-700 hover:bg-brand-100 hover:text-brand-800"
+                  title={`From notebook ${a.notebookId}`}
+                >
+                  <span aria-hidden>📒</span>
+                  {notebookTitle ?? 'Notebook'}
+                </Link>
               </>
             )}
+            {a.tags.length > 0 &&
+              a.tags.map((t) => (
+                <span key={t} className="badge ml-1">
+                  #{t}
+                </span>
+              ))}
           </div>
         </div>
       </div>
@@ -381,7 +411,7 @@ function HitCard({
           </li>
         ))}
       </ul>
-    </button>
+    </div>
   );
 }
 
@@ -415,7 +445,8 @@ function DetailPanel({
           <div className="space-y-1 text-sm">
             <ArtifactKvRow detail={detail} />
           </div>
-          <div className="border-t border-slate-200 pt-3">
+          <NotebookLinkRow detail={detail} />
+          <div className="border-t border-slate-200 pt-3 space-y-2">
             <a
               href={detail.downloadUrl}
               target="_blank"
@@ -424,11 +455,132 @@ function DetailPanel({
             >
               Download blob ↗
             </a>
-            <p className="mt-1 text-[11px] text-slate-500">
-              Pre-authenticated URL valid until {formatDate(detail.expiresAt)}
+            <p className="text-[11px] text-slate-500">
+              PAR valid until {formatDate(detail.expiresAt)}
             </p>
+            <ShareControls id={id} />
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+function NotebookLinkRow({ detail }: { detail: ArtifactDetail }): JSX.Element | null {
+  const a = (detail.artifact ?? {}) as Record<string, unknown>;
+  const notebookId =
+    typeof a['NOTEBOOK_ID'] === 'string'
+      ? (a['NOTEBOOK_ID'] as string)
+      : typeof a['notebookId'] === 'string'
+      ? (a['notebookId'] as string)
+      : null;
+  if (!notebookId) return null;
+  const md =
+    (a['METADATA'] as Record<string, unknown> | undefined) ??
+    (a['metadata'] as Record<string, unknown> | undefined) ??
+    {};
+  const notebookTitle =
+    typeof md['notebookTitle'] === 'string'
+      ? (md['notebookTitle'] as string)
+      : null;
+  return (
+    <div className="rounded-md bg-slate-50 px-2 py-1.5 text-xs">
+      <div className="text-slate-500">Originating notebook</div>
+      <Link
+        to={`/library/${notebookId}`}
+        className="inline-flex items-center gap-1 text-brand-700 hover:underline"
+      >
+        <span aria-hidden>📒</span>
+        {notebookTitle ?? notebookId}
+        <span aria-hidden>↗</span>
+      </Link>
+    </div>
+  );
+}
+
+/**
+ * Tiny share-link generator — ships a copyable URL with a TTL of 1h..7d.
+ * Used inside both CorpusPage and CorpusLibraryPage detail panels.
+ */
+export function ShareControls({ id }: { id: string }): JSX.Element {
+  const [ttl, setTtl] = useState(24);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ShareResult | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function generate() {
+    setBusy(true);
+    setError(null);
+    setCopied(false);
+    try {
+      const r = await shareArtifact(id, ttl);
+      setResult(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.shareUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // ignore — user can manually copy from the input
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs">
+      <div className="mb-1 font-medium text-slate-600">Share link</div>
+      <div className="flex items-center gap-2">
+        <select
+          className="input h-7 text-xs"
+          value={ttl}
+          onChange={(e) => setTtl(parseInt(e.target.value, 10))}
+          disabled={busy}
+        >
+          <option value={1}>1 hour</option>
+          <option value={24}>24 hours</option>
+          <option value={72}>3 days</option>
+          <option value={168}>7 days</option>
+        </select>
+        <button
+          type="button"
+          className="btn-secondary text-xs"
+          onClick={() => void generate()}
+          disabled={busy}
+        >
+          {busy ? '…' : result ? 'Re-issue' : 'Generate'}
+        </button>
+      </div>
+      {error && <div className="mt-1 text-rose-700">{error}</div>}
+      {result && (
+        <div className="mt-2 space-y-1">
+          <div className="flex items-center gap-1">
+            <input
+              readOnly
+              value={result.shareUrl}
+              className="input h-7 flex-1 font-mono text-[11px]"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              onClick={() => void copy()}
+            >
+              {copied ? '✓' : 'Copy'}
+            </button>
+          </div>
+          <div className="text-[10px] text-slate-500">
+            Expires {new Date(result.expiresAt).toLocaleString()} ·{' '}
+            {result.ttlHours}h TTL
+          </div>
+        </div>
       )}
     </div>
   );

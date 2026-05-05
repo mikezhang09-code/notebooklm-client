@@ -5,7 +5,7 @@
  * them in sync when changing the API.
  */
 
-import { apiGet, apiJson, apiFormData } from './api';
+import { apiGet, apiJson, apiFormData, apiDelete } from './api';
 
 // ───────────────────────────────────────────────────────────── health ──
 
@@ -188,4 +188,46 @@ export function ingestToCorpus(payload: IngestPayload): Promise<IngestResult> {
   if (payload.tags) fd.set('tags', JSON.stringify(payload.tags));
   if (payload.metadata) fd.set('metadata', JSON.stringify(payload.metadata));
   return apiFormData<IngestResult>('/api/corpus/ingest', fd);
+}
+
+// ─────────────────────────────────────────────────────────── M5 mutate ──
+
+export interface UpdateArtifactInput {
+  title?: string;
+  tags?: string[];
+}
+
+export function updateArtifact(
+  id: string,
+  patch: UpdateArtifactInput,
+): Promise<{ ok: true; id: string }> {
+  return apiJson<{ ok: true; id: string }>(
+    `/api/corpus/artifacts/${encodeURIComponent(id)}`,
+    patch,
+    'PATCH',
+  );
+}
+
+export function deleteArtifact(
+  id: string,
+): Promise<{ deleted: boolean; blobDeleted: boolean; id: string }> {
+  return apiDelete<{ deleted: boolean; blobDeleted: boolean; id: string }>(
+    `/api/corpus/artifacts/${encodeURIComponent(id)}`,
+  );
+}
+
+export interface ShareResult {
+  shareUrl: string;
+  ttlHours: number;
+  expiresAt: string;
+}
+
+export function shareArtifact(
+  id: string,
+  ttlHours = 24,
+): Promise<ShareResult> {
+  return apiJson<ShareResult>(
+    `/api/corpus/artifacts/${encodeURIComponent(id)}/share`,
+    { ttlHours },
+  );
 }

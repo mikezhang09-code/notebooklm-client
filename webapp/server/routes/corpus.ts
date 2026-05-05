@@ -4,6 +4,8 @@
  * M1: /health
  * M2: /ingest (multipart upload) + /artifacts (list)
  * M3: /search (semantic), /artifacts/:id (detail + PAR download link)
+ * M5: PATCH /artifacts/:id (title/tags), DELETE /artifacts/:id,
+ *     POST /artifacts/:id/share (long-lived PAR)
  */
 
 import { Router } from 'express';
@@ -15,6 +17,7 @@ import {
   getCorpusConfig,
   withConnection,
   createReadPar,
+  deleteObject,
   searchCorpus,
 } from '../corpus/index.js';
 import {
@@ -327,5 +330,189 @@ corpusRouter.post(
         typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,
     });
     res.json(result);
+  }),
+);
+
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+
+/**
+ * PATCH /api/corpus/artifacts/:id
+ *
+ * Body (all optional): { title?: string, tags?: string[] }
+ * Updates only the fields provided. 404 if the row doesn't exist.
+ */
+corpusRouter.patch(
+  '/artifacts/:id',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const body = (req.body ?? {}) as { title?: unknown; tags?: unknown };
+
+    const updates: string[] = [];
+    const binds: Record<string, unknown> = { id };
+    if (typeof body.title === 'string') {
+      const t = body.title.trim();
+      if (t.length === 0 || t.length > 512) {
+        res.status(400).json({ error: 'title must be 1..512 characters' });
+        return;
+      }
+      updates.push('title = :title');
+      binds['title'] = t;
+    }
+    if (Array.isArray(body.tags)) {
+      const cleaned = body.tags
+        .filter((x): x is string => typeof x === 'string')
+        .map((x) => x.trim().toLowerCase())
+        .filter((x) => x.length > 0 && x.length <= 32)
+        .slice(0, 32);
+      updates.push('tags = :tags');
+      binds['tags'] = JSON.stringify(cleaned);
+    }
+    if (updates.length === 0) {
+      res.status(400).json({ error: 'no updatable fields supplied' });
+      return;
+    }
+    updates.push('updated_at = SYSTIMESTAMP');
+
+    const rowsAffected = await withConnection(cfg, async (conn) => {
+      const r = await conn.execute(
+        `UPDATE artifacts SET ${updates.join(', ')} WHERE id = :id`,
+        binds as oracledb.BindParameters,
+        { autoCommit: true },
+      );
+      return r.rowsAffected ?? 0;
+    });
+    if (rowsAffected === 0) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+    res.json({ ok: true, id });
+  }),
+);
+
+/**
+ * DELETE /api/corpus/artifacts/:id
+ *
+ * Deletes the DB row (chunks cascade) and the underlying Object Storage
+ * blob. Returns { deleted: true, blobDeleted: bool } so callers can tell
+ * whether the blob was already missing.
+ */
+corpusRouter.delete(
+  '/artifacts/:id',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+
+    const objectName = await withConnection(cfg, async (conn) => {
+      // Capture the object name before we delete the row.
+      const sel = await conn.execute<{ OBJECT_NAME: string }>(
+        `SELECT object_name FROM artifacts WHERE id = :id`,
+        { id },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      const found = sel.rows?.[0]?.OBJECT_NAME;
+      if (!found) return null;
+      // FK on artifact_chunks.artifact_id is ON DELETE CASCADE so chunks go too.
+      await conn.execute(
+        `DELETE FROM artifacts WHERE id = :id`,
+        { id },
+        { autoCommit: true },
+      );
+      return found;
+    });
+    if (!objectName) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+    // Best-effort blob delete; never fail the request if OCI complains.
+    let blobDeleted = false;
+    try {
+      const r = await deleteObject(cfg, objectName);
+      blobDeleted = r.deleted;
+    } catch (err) {
+      console.error(
+        '[corpus] blob delete failed; row already gone',
+        objectName,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    res.json({ deleted: true, id, blobDeleted });
+  }),
+);
+
+/**
+ * POST /api/corpus/artifacts/:id/share
+ *
+ * Body: { ttlHours?: number }  (default 24, max 168 = 7 days)
+ *
+ * Returns a fresh PAR-backed download URL with the requested TTL, suitable
+ * for sharing externally. Note: PARs cannot be revoked from this app —
+ * shorter TTLs are safer. (Use OCI console to delete a PAR if needed.)
+ */
+corpusRouter.post(
+  '/artifacts/:id/share',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const body = (req.body ?? {}) as { ttlHours?: unknown };
+    const requested =
+      typeof body.ttlHours === 'number' && Number.isFinite(body.ttlHours)
+        ? body.ttlHours
+        : 24;
+    const ttlHours = Math.min(Math.max(Math.floor(requested), 1), 168); // 1h..7d
+
+    const objectName = await withConnection(cfg, async (conn) => {
+      const r = await conn.execute<{ OBJECT_NAME: string }>(
+        `SELECT object_name FROM artifacts WHERE id = :id`,
+        { id },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      return r.rows?.[0]?.OBJECT_NAME ?? null;
+    });
+    if (!objectName) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+
+    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
+    const par = await createReadPar(
+      cfg,
+      objectName,
+      expiresAt,
+      `share-${id.slice(-8)}-${Date.now()}`,
+    );
+    const shareUrl = /^https?:\/\//i.test(par.fullPath)
+      ? par.fullPath
+      : `https://objectstorage.${cfg.ociRegion}.oraclecloud.com${par.fullPath}`;
+
+    res.json({
+      shareUrl,
+      ttlHours,
+      expiresAt: par.expiresAt.toISOString(),
+    });
   }),
 );
