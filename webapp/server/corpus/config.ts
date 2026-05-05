@@ -44,6 +44,40 @@ export interface CorpusConfig {
   oracleWalletDir: string;
   /** Wallet password set when downloading from OCI Console. */
   oracleWalletPassword: string;
+
+  /**
+   * M7 — OCI Speech (Whisper model) for audio/video transcription.
+   *
+   * All fields are optional. When `speechEnabled` is false, audio/video
+   * ingest still stores the blob + catalog row but skips transcription,
+   * and the transcription poller is never started. This keeps the
+   * corpus subsystem fully functional even without Speech access.
+   */
+  speechEnabled: boolean;
+  /**
+   * Region to call OCI Speech against. Defaults to `ociGenAiRegion` which
+   * already handles the "home region doesn't host this service" case.
+   */
+  speechRegion: string;
+  /**
+   * Whisper language code. Defaults to `auto` (lets Whisper detect).
+   * Common overrides: `zh`, `en`, `ja`. See TranscriptionModelDetails
+   * in oci-aispeech for the full list.
+   */
+  speechLanguage: string;
+  /**
+   * Object Storage prefix (within `ociBucket`) for transcription job output.
+   * Each job writes its JSON under `<prefix><objectName>.json`.
+   */
+  speechOutputPrefix: string;
+  /**
+   * Skip files whose duration (as reported by the job after submit) exceeds
+   * this cap. Defensive default of 120 minutes — a 2h MP4 already costs
+   * $1 and is almost certainly not what you meant to transcribe.
+   */
+  maxTranscribeMinutes: number;
+  /** Poller tick interval (ms). 30 s is gentle on IAM quota and the DB. */
+  transcribePollMs: number;
 }
 
 let cached: CorpusConfig | null | undefined;
@@ -131,11 +165,42 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
   const chatModel = envOrNull('OCI_GENAI_CHAT_MODEL');
   if (chatModel) (partial as CorpusConfig).ociGenAiChatModel = chatModel;
 
+  // Optional: OCI Speech (M7). Fully gated — disabling leaves the rest of
+  // the corpus stack functional; audio/video ingests just skip transcription.
+  const speechEnabledRaw = envOrNull('OCI_SPEECH_ENABLED');
+  // Default: ON when the rest of the corpus is enabled (GenAI region is
+  // typically where Speech lives too). User can force OFF with `false`/`0`.
+  const speechEnabled =
+    speechEnabledRaw == null
+      ? true
+      : !/^(false|0|no|off)$/i.test(speechEnabledRaw.trim());
+  (partial as CorpusConfig).speechEnabled = speechEnabled;
+  (partial as CorpusConfig).speechRegion =
+    envOrNull('OCI_SPEECH_REGION') ?? (partial as CorpusConfig).ociGenAiRegion;
+  (partial as CorpusConfig).speechLanguage =
+    envOrNull('OCI_SPEECH_LANGUAGE') ?? 'auto';
+  // Output prefix — trailing slash is optional; we always store normalised form.
+  const prefixRaw = envOrNull('OCI_SPEECH_OUTPUT_PREFIX') ?? 'transcripts/';
+  (partial as CorpusConfig).speechOutputPrefix = prefixRaw.endsWith('/')
+    ? prefixRaw
+    : `${prefixRaw}/`;
+  const maxMinsRaw = envOrNull('CORPUS_MAX_TRANSCRIBE_MINUTES');
+  const maxMins = maxMinsRaw ? parseInt(maxMinsRaw, 10) : NaN;
+  (partial as CorpusConfig).maxTranscribeMinutes =
+    Number.isFinite(maxMins) && maxMins > 0 ? maxMins : 120;
+  const pollRaw = envOrNull('CORPUS_TRANSCRIBE_POLL_MS');
+  const pollMs = pollRaw ? parseInt(pollRaw, 10) : NaN;
+  (partial as CorpusConfig).transcribePollMs =
+    Number.isFinite(pollMs) && pollMs >= 5000 ? pollMs : 30000;
+
   cached = partial as CorpusConfig;
   console.log(
     `[corpus] enabled — region=${cached.ociRegion} bucket=${cached.ociBucket} ` +
       `db=${cached.oracleConnectString} genai=${cached.ociGenAiRegion}` +
-      (cached.ociGenAiChatModel ? ` chat=${cached.ociGenAiChatModel}` : ' chat=disabled'),
+      (cached.ociGenAiChatModel ? ` chat=${cached.ociGenAiChatModel}` : ' chat=disabled') +
+      (cached.speechEnabled
+        ? ` speech=${cached.speechRegion}(${cached.speechLanguage})`
+        : ' speech=disabled'),
   );
   return cached;
 }

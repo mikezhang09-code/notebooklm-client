@@ -13,20 +13,25 @@ DECLARE
 BEGIN
   EXECUTE IMMEDIATE q'[
     CREATE TABLE artifacts (
-      id              VARCHAR2(26)  NOT NULL,            -- ULID (26 chars, sortable, URL-safe)
-      kind            VARCHAR2(32)  NOT NULL,            -- audio|report|video|quiz|flashcards|infographic|slides|data_table|upload
-      origin          VARCHAR2(16)  NOT NULL,            -- notebooklm | upload
-      title           VARCHAR2(512) NOT NULL,
-      notebook_id     VARCHAR2(64),                      -- nullable for uploads
-      artifact_id     VARCHAR2(64),                      -- source artifact id from NotebookLM (nullable)
-      bucket          VARCHAR2(128) NOT NULL,
-      object_name     VARCHAR2(1024) NOT NULL,
-      mime_type       VARCHAR2(128),
-      size_bytes      NUMBER,
-      tags            JSON,                              -- ['q2-earnings','tencent']
-      metadata        JSON,                              -- arbitrary kind-specific extras (e.g. format/length)
-      created_at      TIMESTAMP WITH LOCAL TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
-      updated_at      TIMESTAMP WITH LOCAL TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+      id                      VARCHAR2(26)  NOT NULL,            -- ULID (26 chars, sortable, URL-safe)
+      kind                    VARCHAR2(32)  NOT NULL,            -- audio|report|video|quiz|flashcards|infographic|slides|data_table|upload
+      origin                  VARCHAR2(16)  NOT NULL,            -- notebooklm | upload
+      title                   VARCHAR2(512) NOT NULL,
+      notebook_id             VARCHAR2(64),                      -- nullable for uploads
+      artifact_id             VARCHAR2(64),                      -- source artifact id from NotebookLM (nullable)
+      bucket                  VARCHAR2(128) NOT NULL,
+      object_name             VARCHAR2(1024) NOT NULL,
+      mime_type               VARCHAR2(128),
+      size_bytes              NUMBER,
+      tags                    JSON,                              -- ['q2-earnings','tencent']
+      metadata                JSON,                              -- arbitrary kind-specific extras (e.g. format/length)
+      -- M7 transcription tracking (nullable for pre-M7 rows + non-audio/video kinds)
+      transcription_status    VARCHAR2(20),                      -- null|pending|transcribing|done|failed|skipped
+      transcription_job_ocid  VARCHAR2(255),                     -- OCI Speech job OCID for polling
+      transcribed_at          TIMESTAMP WITH LOCAL TIME ZONE,
+      transcription_error     VARCHAR2(2000),
+      created_at              TIMESTAMP WITH LOCAL TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+      updated_at              TIMESTAMP WITH LOCAL TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
       CONSTRAINT pk_artifacts PRIMARY KEY (id),
       CONSTRAINT ck_artifacts_origin CHECK (origin IN ('notebooklm','upload'))
     )
@@ -45,6 +50,8 @@ BEGIN
   BEGIN EXECUTE IMMEDIATE 'CREATE INDEX ix_artifacts_origin      ON artifacts(origin)';      EXCEPTION WHEN e_already_exists THEN NULL; END;
   BEGIN EXECUTE IMMEDIATE 'CREATE INDEX ix_artifacts_notebook    ON artifacts(notebook_id)'; EXCEPTION WHEN e_already_exists THEN NULL; END;
   BEGIN EXECUTE IMMEDIATE 'CREATE INDEX ix_artifacts_created_at  ON artifacts(created_at DESC)'; EXCEPTION WHEN e_already_exists THEN NULL; END;
+  -- M7: hot-path index for the transcription poller (small, cheap).
+  BEGIN EXECUTE IMMEDIATE 'CREATE INDEX ix_artifacts_trx_status  ON artifacts(transcription_status)'; EXCEPTION WHEN e_already_exists THEN NULL; END;
 END;
 /
 
