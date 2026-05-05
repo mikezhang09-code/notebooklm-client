@@ -218,12 +218,16 @@ interface SpeechOutputJson {
 /**
  * Locate the actual transcript JSON in Object Storage for a given job.
  *
- * OCI Speech writes under `<speechOutputPrefix>job-<ocidTail>/<arbitrary>.json`
- * where `<ocidTail>` is everything after the last `.` in the job OCID.
- * The `<arbitrary>` filename varies by model version (the current
- * WHISPER_MEDIUM pattern is `<namespace>_<bucket>_<flatObjectName>.json`
- * but we don't rely on that — we just take the first `.json` under the
- * job prefix). The poller calls this once the job state is SUCCEEDED.
+ * OCI Speech writes outputs at an observed layout like:
+ *   <speechOutputPrefix>job-<ocidTail>/<namespace>_<bucket>_<inputDir>/<inputBasename>.json
+ * where <ocidTail> is everything after the last `.` in the job OCID,
+ * and the middle folder mirrors the input object's path structure
+ * (each `/` in the input name becomes a folder level). The exact
+ * filename scheme isn't contractual and has changed across Speech
+ * model versions, so we don't try to reconstruct it — we just
+ * recursively list under `job-<ocidTail>/` (no `delimiter` param →
+ * listObjects walks the subtree) and return the first `.json` object,
+ * which is unambiguous because each job submits exactly one input.
  *
  * Returns null when nothing is found (Speech reported SUCCEEDED but
  * output is missing — either a bucket-write permission issue or a race).
