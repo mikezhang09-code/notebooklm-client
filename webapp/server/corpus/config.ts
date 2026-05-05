@@ -30,6 +30,13 @@ export interface CorpusConfig {
    * See https://docs.oracle.com/en-us/iaas/Content/generative-ai/regions.htm
    */
   ociGenAiRegion: string;
+  /**
+   * Optional chat model for RAG answers (e.g. `cohere.command-r-plus-08-2024`,
+   * `cohere.command-r-08-2024`). If left unset the /corpus/chat feature is
+   * disabled and the rest of the corpus subsystem (embeddings, search, ingest)
+   * still works as before.
+   */
+  ociGenAiChatModel?: string;
   /** Oracle Autonomous Database */
   oracleUser: string;
   oraclePassword: string;
@@ -119,11 +126,16 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
   // Optional: GenAI region override (falls back to ociRegion).
   (partial as CorpusConfig).ociGenAiRegion =
     envOrNull('OCI_GENAI_REGION') ?? (partial as CorpusConfig).ociRegion;
+  // Optional: chat model. Leaving this unset disables /corpus/chat but keeps
+  // the rest of the corpus subsystem running.
+  const chatModel = envOrNull('OCI_GENAI_CHAT_MODEL');
+  if (chatModel) (partial as CorpusConfig).ociGenAiChatModel = chatModel;
 
   cached = partial as CorpusConfig;
   console.log(
     `[corpus] enabled — region=${cached.ociRegion} bucket=${cached.ociBucket} ` +
-      `db=${cached.oracleConnectString} genai=${cached.ociGenAiRegion}`,
+      `db=${cached.oracleConnectString} genai=${cached.ociGenAiRegion}` +
+      (cached.ociGenAiChatModel ? ` chat=${cached.ociGenAiChatModel}` : ' chat=disabled'),
   );
   return cached;
 }

@@ -13,6 +13,7 @@ import DiagnosePage from './pages/DiagnosePage';
 import CorpusPage from './pages/CorpusPage';
 import CorpusUploadPage from './pages/CorpusUploadPage';
 import CorpusLibraryPage from './pages/CorpusLibraryPage';
+import CorpusChatPage from './pages/CorpusChatPage';
 
 interface NavItem {
   to: string;
@@ -49,6 +50,10 @@ export default function App() {
   const [authed, setAuthed] = useState<boolean>(hasSession());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [corpusEnabled, setCorpusEnabled] = useState<boolean>(false);
+  // Chat is gated separately because it needs OCI_GENAI_CHAT_MODEL on top
+  // of the rest of the corpus stack — we still want the search/library/upload
+  // entries even when the chat model isn't configured.
+  const [chatEnabled, setChatEnabled] = useState<boolean>(false);
   const location = useLocation();
 
   useEffect(() => {
@@ -61,12 +66,18 @@ export default function App() {
     let cancelled = false;
     getCorpusHealth()
       .then((h) => {
-        if (!cancelled) setCorpusEnabled(Boolean(h.enabled));
+        if (!cancelled) {
+          setCorpusEnabled(Boolean(h.enabled));
+          setChatEnabled(Boolean(h.chat?.enabled));
+        }
       })
       .catch(() => {
         // Silently treat probe failure as "disabled" — keeps the rest of
         // the app fully functional even if the corpus stack is offline.
-        if (!cancelled) setCorpusEnabled(false);
+        if (!cancelled) {
+          setCorpusEnabled(false);
+          setChatEnabled(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -81,6 +92,9 @@ export default function App() {
     ? [
         ...NAV,
         { to: '/corpus', label: 'Search', group: 'Research' },
+        ...(chatEnabled
+          ? [{ to: '/corpus/chat', label: 'Chat', group: 'Research' }]
+          : []),
         { to: '/corpus/library', label: 'Library', group: 'Research' },
         { to: '/corpus/upload', label: 'Upload', group: 'Research' },
       ]
@@ -169,6 +183,10 @@ export default function App() {
                 <Route path="/corpus" element={<CorpusPage />} />
                 <Route path="/corpus/library" element={<CorpusLibraryPage />} />
                 <Route path="/corpus/upload" element={<CorpusUploadPage />} />
+                {/* Chat route is registered when the corpus is enabled even
+                    if the chat model isn't — the page itself surfaces a
+                    helpful "set OCI_GENAI_CHAT_MODEL" message in that case. */}
+                <Route path="/corpus/chat" element={<CorpusChatPage />} />
               </>
             )}
             <Route path="*" element={<Navigate to="/library" replace />} />

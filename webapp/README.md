@@ -87,11 +87,16 @@ you upload) to a personal research corpus backed by:
 
 The subsystem is **fully optional**: if no env vars are set, the webapp
 runs exactly as before and none of the OCI SDKs are reached. Set them and
-a **Research** section appears in the sidebar with three pages:
+a **Research** section appears in the sidebar with four pages:
 
 - **Search** (`/corpus`) — semantic search over every ingested chunk with
   per-snippet distance scores, kind + threshold filters, detail panel
   that mints a fresh download PAR and a shareable link.
+- **Chat** (`/corpus/chat`) — retrieval-augmented chat. The model is
+  given the top-N matching snippets as `documents` and emits inline
+  citations that link the answer back to the source artifacts. Gated
+  on the optional `OCI_GENAI_CHAT_MODEL` env var (e.g.
+  `cohere.command-r-plus-08-2024`); leave it unset to hide the page.
 - **Library** (`/corpus/library`) — paginated table of every artifact
   with kind / origin / title filters, row selection for bulk delete,
   inline rename + retag, per-row delete, and a cross-link badge that
@@ -171,6 +176,14 @@ POST   /api/corpus/search                       body: { query, kind?, notebookId
                                                          artifactLimit?, snippetsPerArtifact?,
                                                          maxDistance? }
                                                 Semantic kNN over embeddings, grouped per artifact.
+
+POST   /api/corpus/chat                         body: { question, history?, kind?, notebookId?,
+                                                         maxSources?, snippetsPerSource?, maxDistance? }
+                                                Retrieval-augmented chat. Returns
+                                                { answer, citations[], sources[], retrievalMs, chatMs, ... }
+                                                where each citation maps spans in the answer back to
+                                                1-based source indices in `sources`. 503 if
+                                                `OCI_GENAI_CHAT_MODEL` is not set.
 ```
 
 Auto-ingest is also wired into the notebook download route:

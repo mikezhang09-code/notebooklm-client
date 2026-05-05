@@ -8,7 +8,9 @@
 
 Standalone CLI, library, **and local Web GUI** for Google's [NotebookLM](https://notebooklm.google.com/) — generate audio podcasts, reports, slides, quizzes, videos, infographics, data tables, flashcards, analyze content, manage notebooks, and chat.
 
-> **New in v0.5.0** — an optional **Research Corpus** on the Web GUI: every artifact you download (and anything you upload) is auto-ingested into Oracle ADB + Object Storage with 1024-dim multilingual embeddings, then made searchable semantically across notebooks. Library page for curation (rename, retag, delete, share links), deep-link cross-references back to the originating notebook. See [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional) in the webapp README.
+> **New in v0.6.0** — **Chat over corpus**: a RAG chat page that answers questions grounded in your research corpus, with inline citations back to the underlying artifacts. Powered by OCI Generative AI (Cohere Command R / R+) with the same Oracle Autonomous Database vector search the rest of the corpus uses. See [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional).
+>
+> **New in v0.5.0** — an optional **Research Corpus** on the Web GUI: every artifact you download (and anything you upload) is auto-ingested into Oracle ADB + Object Storage with 1024-dim multilingual embeddings, then made searchable semantically across notebooks. Library page for curation (rename, retag, delete, share links), deep-link cross-references back to the originating notebook.
 >
 > **New in v0.4.0** — a local-first webapp that wraps every CLI command in a friendly UI, plus a unified `client.downloadArtifact()` API. See [Web GUI](#web-gui) below.
 
@@ -119,6 +121,7 @@ Features:
   - Auto-ingests every downloaded artifact in the background
   - Manual `/corpus/upload` page for any PDF/DOCX/HTML/MD/TXT/CSV/JSON
   - `/corpus` semantic search with kind + distance filters, notebook cross-links
+  - `/corpus/chat` retrieval-augmented chat with inline citations (gated on `OCI_GENAI_CHAT_MODEL`)
   - `/corpus/library` with rename, retag, per-row + bulk delete, shareable links (1 h – 7 d TTL)
 
 Deploy to Hugging Face Spaces:
@@ -408,7 +411,9 @@ MIT
 
 Google [NotebookLM](https://notebooklm.google.com/) 的独立 CLI、编程库 **和本地 Web GUI** —— 生成音频播客、报告、幻灯片、测验、视频、信息图、数据表、闪卡，分析内容、管理笔记本、对话。
 
-> **v0.5.0 新增** —— Web GUI 可选的 **研究语料库（Research Corpus）**：每次下载的产物（以及任意上传的文档）自动写入 Oracle ADB + Object Storage，生成 1024 维多语言向量嵌入，跨所有笔记本做语义搜索。Library 页面支持整理（重命名、改标签、删除、生成分享链接），每个条目都有反向链接跳回原始笔记本。详见 webapp README 中的 [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional) 一节。
+> **v0.6.0 新增** —— **基于语料库的 RAG 对话**：新增 `/corpus/chat` 页面，模型在你的研究语料库内检索片段后给出带有内联引用的答案。底层使用 OCI Generative AI（Cohere Command R / R+）+ Oracle Autonomous Database 向量检索。详见 webapp README 中的 [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional)。
+>
+> **v0.5.0 新增** —— Web GUI 可选的 **研究语料库（Research Corpus）**：每次下载的产物（以及任意上传的文档）自动写入 Oracle ADB + Object Storage，生成 1024 维多语言向量嵌入，跨所有笔记本做语义搜索。Library 页面支持整理（重命名、改标签、删除、生成分享链接），每个条目都有反向链接跳回原始笔记本。
 >
 > **v0.4.0 新增** —— 本地网页界面，封装全部 CLI 命令，并提供统一的 `client.downloadArtifact()` API。详见下方 [Web GUI](#web-gui-1)。
 
@@ -519,6 +524,7 @@ npm run webapp:start
   - 下载产物时后台自动入库
   - `/corpus/upload` 页面手动上传 PDF/DOCX/HTML/MD/TXT/CSV/JSON
   - `/corpus` 跨笔记本语义搜索，支持类型、距离阈值过滤，以及返回原始笔记本的反向链接
+  - `/corpus/chat` 基于检索增强（RAG）的对话，回答带内联引用（需要 `OCI_GENAI_CHAT_MODEL`）
   - `/corpus/library` 支持重命名、改标签、逐条/批量删除、生成分享链接（1 小时 – 7 天 TTL）
 
 部署到 Hugging Face Spaces：
@@ -803,6 +809,22 @@ MIT
 ---
 
 ## Changelog / 更新日志
+
+### v0.6.0 (2026-05-05)
+
+- **Chat over corpus (RAG)** — new `/corpus/chat` page that answers natural-language questions grounded in your ingested artifacts. Uses Cohere chat through OCI Generative AI with the corpus snippets passed as the model's `documents` array, so answers come back with first-class inline citations linking spans of text to specific artifacts and chunks.
+- **Inline citation UI** — assistant turns render `[1]`, `[2]` superscript badges spliced into the answer text. Clicking a badge scrolls the matching source card into view; the source card shows the artifact title, kind, distance pill, originating notebook badge, and the exact snippets the model relied on.
+- **Per-turn retrieval filters** — kind selector, max-sources slider (1–10), max-distance slider (0.4–1.0), all applied to *future* turns so prior conversation context isn't retroactively perturbed.
+- **Optional gating** — controlled by a new `OCI_GENAI_CHAT_MODEL` env var (e.g. `cohere.command-r-plus-08-2024`). Leave it unset and chat is hidden, while the rest of the corpus subsystem keeps working unchanged.
+- **New endpoint** — `POST /api/corpus/chat`. `GET /api/corpus/health` now also surfaces a `chat: { enabled, model? }` field so the UI can show/hide the page without a probe round-trip.
+
+---
+
+- **基于语料库的 RAG 对话** —— 新增 `/corpus/chat` 页面，回答关于已入库文档的自然语言问题。底层通过 OCI Generative AI 调用 Cohere chat，将检索到的片段作为模型的 `documents` 一起传入，因此回答里自带原生的内联引用，将文字片段精准映射回具体文档和块。
+- **内联引用 UI** —— 模型回答中插入 `[1]`、`[2]` 上标徽标。点击徽标会自动滚动到对应的来源卡片；卡片展示文档标题、类型、距离标签、原始笔记本标识，以及模型实际依据的片段。
+- **按轮检索过滤** —— 类型选择器、来源数（1–10）和距离阈值（0.4–1.0）滑块，仅作用于**后续**对话轮次，避免回溯式改变历史上下文。
+- **可选启用** —— 由新的 `OCI_GENAI_CHAT_MODEL` 环境变量控制（推荐 `cohere.command-r-plus-08-2024`）；不设置时该页面隐藏，语料库其它功能照常运行。
+- **新增端点** —— `POST /api/corpus/chat`。`GET /api/corpus/health` 现在额外返回 `chat: { enabled, model? }` 字段，前端无需额外探测即可决定是否显示。
 
 ### v0.5.0 (2026-05-05)
 

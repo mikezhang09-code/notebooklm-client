@@ -16,6 +16,7 @@ export interface CorpusHealth {
   db: { ok: boolean; version?: string; user?: string; error?: string };
   storage: { ok: boolean; bucket?: string; approxObjectCount?: number; error?: string };
   genai: { ok: boolean; model?: string; dimensions?: number; error?: string };
+  chat: { enabled: boolean; model?: string };
 }
 
 export function getCorpusHealth(): Promise<CorpusHealth> {
@@ -230,4 +231,52 @@ export function shareArtifact(
     `/api/corpus/artifacts/${encodeURIComponent(id)}/share`,
     { ttlHours },
   );
+}
+
+// ────────────────────────────────────────────────────────────── M6 chat ──
+
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatCitationSpan {
+  start: number;
+  end: number;
+  text: string;
+  /** 1-based indices into ChatResult.sources. */
+  sourceIndices: number[];
+}
+
+export interface ChatSource {
+  index: number;
+  artifact: SearchHit['artifact'];
+  snippets: SearchSnippet[];
+  bestDistance: number;
+}
+
+export interface ChatResult {
+  answer: string;
+  citations: ChatCitationSpan[];
+  sources: ChatSource[];
+  retrievalMs: number;
+  chatMs: number;
+  noSources: boolean;
+  finishReason?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+export interface ChatRequest {
+  question: string;
+  history?: ChatTurn[];
+  kind?: ArtifactKind;
+  notebookId?: string;
+  maxSources?: number;
+  snippetsPerSource?: number;
+  maxDistance?: number;
+}
+
+export function chatWithCorpus(req: ChatRequest): Promise<ChatResult> {
+  return apiJson<ChatResult>('/api/corpus/chat', req);
 }

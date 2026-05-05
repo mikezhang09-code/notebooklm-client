@@ -16,8 +16,14 @@ export {
   createReadPar,
   deleteObject,
 } from './oci/storage.js';
-export { genaiHealthCheck, embedTexts } from './oci/genai.js';
-export type { EmbedInputType } from './oci/genai.js';
+export { genaiHealthCheck, embedTexts, chatCohere } from './oci/genai.js';
+export type {
+  EmbedInputType,
+  CohereChatTurn,
+  CohereChatDocument,
+  CohereChatCitation,
+  CohereChatOutcome,
+} from './oci/genai.js';
 
 export { searchCorpus } from './search.js';
 export type {
@@ -26,6 +32,15 @@ export type {
   SearchHit,
   SearchSnippet,
 } from './search.js';
+
+export { chatCorpus } from './chat.js';
+export type {
+  ChatTurn,
+  ChatOptions,
+  ChatResult,
+  ChatSource,
+  ChatCitationSpan,
+} from './chat.js';
 
 import { getCorpusConfig } from './config.js';
 import { dbHealthCheck } from './oci/db.js';
@@ -39,6 +54,8 @@ export interface CorpusHealth {
   db: { ok: boolean; version?: string; user?: string; error?: string };
   storage: { ok: boolean; bucket?: string; approxObjectCount?: number; error?: string };
   genai: { ok: boolean; model?: string; dimensions?: number; error?: string };
+  /** RAG chat is gated on a separate (optional) chat-model env var. */
+  chat: { enabled: boolean; model?: string };
 }
 
 /**
@@ -54,6 +71,7 @@ export async function corpusHealth(): Promise<CorpusHealth> {
       db: { ok: false, error: 'corpus disabled (env vars missing)' },
       storage: { ok: false, error: 'corpus disabled' },
       genai: { ok: false, error: 'corpus disabled' },
+      chat: { enabled: false },
     };
   }
   const [db, storage, genai] = await Promise.all([
@@ -68,5 +86,8 @@ export async function corpusHealth(): Promise<CorpusHealth> {
     db,
     storage,
     genai,
+    chat: cfg.ociGenAiChatModel
+      ? { enabled: true, model: cfg.ociGenAiChatModel }
+      : { enabled: false },
   };
 }

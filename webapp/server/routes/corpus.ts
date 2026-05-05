@@ -6,6 +6,7 @@
  * M3: /search (semantic), /artifacts/:id (detail + PAR download link)
  * M5: PATCH /artifacts/:id (title/tags), DELETE /artifacts/:id,
  *     POST /artifacts/:id/share (long-lived PAR)
+ * M6: POST /chat (RAG over corpus)
  */
 
 import { Router } from 'express';
@@ -19,6 +20,8 @@ import {
   createReadPar,
   deleteObject,
   searchCorpus,
+  chatCorpus,
+  type ChatTurn,
 } from '../corpus/index.js';
 import {
   ingestArtifact,
@@ -325,6 +328,94 @@ corpusRouter.post(
       snippetsPerArtifact:
         typeof body['snippetsPerArtifact'] === 'number'
           ? body['snippetsPerArtifact']
+          : undefined,
+      maxDistance:
+        typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,
+    });
+    res.json(result);
+  }),
+);
+
+/**
+ * POST /api/corpus/chat
+ *
+ * Retrieval-augmented chat over the corpus.
+ *
+ * Body:
+ *   question           (required) string - the user's current message
+ *   history            (optional) Array<{ role: 'user'|'assistant', content }>
+ *   kind               (optional) artifact kind filter passed to retrieval
+ *   notebookId         (optional) restrict retrieval to a single notebook
+ *   maxSources         (optional) artifacts to retrieve (default 6, max 10)
+ *   snippetsPerSource  (optional) chunks per artifact in the prompt
+ *                                 (default 2, max 4)
+ *   maxDistance        (optional) cosine ceiling for retrieval (default 0.75)
+ *
+ * Returns:
+ *   { answer, citations: [{start,end,text,sourceIndices[]}],
+ *     sources: [{index, artifact, snippets, bestDistance}],
+ *     retrievalMs, chatMs, noSources, finishReason?, inputTokens?, outputTokens? }
+ *
+ * 503 if either the corpus is disabled OR the chat model is not configured
+ * (set OCI_GENAI_CHAT_MODEL in .env to enable).
+ */
+corpusRouter.post(
+  '/chat',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    if (!cfg.ociGenAiChatModel) {
+      res.status(503).json({
+        error:
+          'corpus chat is disabled — set OCI_GENAI_CHAT_MODEL in .env to enable',
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const question =
+      typeof body['question'] === 'string' ? body['question'].trim() : '';
+    if (question.length === 0) {
+      res.status(400).json({ error: 'question is required' });
+      return;
+    }
+    if (question.length > 4000) {
+      res.status(400).json({ error: 'question too long (max 4000 chars)' });
+      return;
+    }
+
+    // Validate + normalize history; cap at the last 10 turns to bound prompt
+    // size. Anything older than that almost never improves the answer and
+    // just inflates the input-token bill.
+    const rawHistory = Array.isArray(body['history']) ? body['history'] : [];
+    const history: ChatTurn[] = [];
+    for (const t of rawHistory.slice(-10)) {
+      if (typeof t !== 'object' || t === null) continue;
+      const role = (t as { role?: unknown }).role;
+      const content = (t as { content?: unknown }).content;
+      if (
+        (role === 'user' || role === 'assistant') &&
+        typeof content === 'string' &&
+        content.trim().length > 0
+      ) {
+        history.push({ role, content });
+      }
+    }
+
+    const result = await chatCorpus(cfg, {
+      question,
+      history,
+      kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
+      notebookId:
+        typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
+      maxSources:
+        typeof body['maxSources'] === 'number' ? body['maxSources'] : undefined,
+      snippetsPerSource:
+        typeof body['snippetsPerSource'] === 'number'
+          ? body['snippetsPerSource']
           : undefined,
       maxDistance:
         typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,

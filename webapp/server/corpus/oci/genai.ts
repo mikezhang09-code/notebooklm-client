@@ -88,6 +88,110 @@ export async function embedTexts(
   return results;
 }
 
+// ─────────────────────────────────────────────────────────── chat (RAG) ──
+
+export interface CohereChatTurn {
+  role: 'USER' | 'CHATBOT' | 'SYSTEM';
+  message: string;
+}
+
+export interface CohereChatDocument {
+  id: string;
+  title?: string;
+  snippet: string;
+}
+
+export interface CohereChatCitation {
+  start: number;
+  end: number;
+  text: string;
+  documentIds: string[];
+}
+
+export interface CohereChatOutcome {
+  text: string;
+  citations: CohereChatCitation[];
+  finishReason?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/**
+ * Run a single Cohere-style chat turn through OCI Generative AI.
+ *
+ * We use the Cohere chat API because it accepts a first-class `documents`
+ * array — when supplied, the model emits citations pointing back at the
+ * documents it relied on, which is exactly what we need for RAG answers.
+ *
+ * Non-streaming for v1; streaming can be layered on later behind SSE.
+ */
+export async function chatCohere(
+  cfg: CorpusConfig,
+  opts: {
+    question: string;
+    preamble?: string;
+    history?: CohereChatTurn[];
+    documents?: CohereChatDocument[];
+    maxTokens?: number;
+    temperature?: number;
+  },
+): Promise<CohereChatOutcome> {
+  if (!cfg.ociGenAiChatModel) {
+    throw new Error(
+      'chat model not configured — set OCI_GENAI_CHAT_MODEL in .env',
+    );
+  }
+  const client = await getGenAiClient(cfg);
+
+  // OCI SDK expects loose shapes for chatRequest; cast through unknown to
+  // bypass the strict overly-specific type on ChatDetails.chatRequest.
+  const chatRequest = {
+    apiFormat: 'COHERE',
+    message: opts.question,
+    preambleOverride: opts.preamble,
+    chatHistory: opts.history?.map((h) => ({
+      role: h.role,
+      message: h.message,
+    })),
+    documents: opts.documents,
+    maxTokens: opts.maxTokens ?? 900,
+    temperature: opts.temperature ?? 0.3,
+    isStream: false,
+    citationQuality: 'ACCURATE',
+  } as unknown as genai.models.CohereChatRequest;
+
+  // `client.chat` returns `ChatResponse | ReadableStream` because the SDK
+  // uses streaming when `isStream: true`. We force non-streaming above, so
+  // narrow to the non-stream branch here.
+  const response = (await client.chat({
+    chatDetails: {
+      compartmentId: cfg.ociCompartmentId,
+      servingMode: {
+        servingType: 'ON_DEMAND',
+        modelId: cfg.ociGenAiChatModel,
+      } as genai.models.OnDemandServingMode,
+      chatRequest,
+    },
+  })) as unknown as { chatResult?: { chatResponse?: genai.models.CohereChatResponse } };
+
+  const result = (response?.chatResult?.chatResponse ??
+    {}) as genai.models.CohereChatResponse;
+  return {
+    text: result.text ?? '',
+    citations: (result.citations ?? []).map((c) => ({
+      start: c.start,
+      end: c.end,
+      text: c.text,
+      documentIds: c.documentIds ?? [],
+    })),
+    finishReason: result.finishReason,
+    inputTokens: result.usage?.promptTokens,
+    outputTokens: result.usage?.completionTokens,
+  };
+}
+
+// ────────────────────────────────────────────────────────────── health ──
+
 /**
  * Health check — embeds a single short test string and verifies dimensions.
  */
