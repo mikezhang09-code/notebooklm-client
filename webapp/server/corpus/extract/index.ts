@@ -2,14 +2,59 @@
  * Text-extraction dispatcher.
  *
  * Given a Buffer + MIME type, returns plain UTF-8 text that's safe to
- * chunk + embed. Unknown types fall back to the text extractor (still
- * useful for `.md`, `.csv`, `.log`, etc.).
+ * chunk + embed. Unknown types fall back to the text extractor.
+ *
+ * Binary container formats (audio/video/images/zip/etc.) intentionally
+ * return an empty string instead of `buf.toString('utf8')` — feeding raw
+ * MP4/MP3 bytes through a UTF-8 decode produces mojibake that ends up
+ * embedded as if it were real Chinese, then surfaces as junk hits in
+ * search and chat. Until we wire a transcription / OCR step, the row
+ * still lands in the catalog with the blob in Object Storage; only the
+ * `chunks` column stays empty.
  */
 
 import { extractText } from './text.js';
 import { extractPdf } from './pdf.js';
 import { extractDocx } from './docx.js';
 import { extractHtml } from './html.js';
+
+/**
+ * MIME prefixes that are known to be opaque binary blobs we can't turn
+ * into text without an external service (transcription, OCR, archive
+ * extraction, etc.). Anything matching one of these short-circuits to
+ * an empty-string extractor.
+ */
+const BINARY_MIME_PREFIXES = [
+  'audio/',
+  'video/',
+  'image/',
+  'font/',
+  'application/zip',
+  'application/x-zip',
+  'application/x-7z-compressed',
+  'application/x-rar',
+  'application/x-tar',
+  'application/gzip',
+  'application/x-bzip',
+  'application/octet-stream',
+];
+
+const BINARY_EXTENSIONS = new Set([
+  // audio
+  'mp3', 'wav', 'm4a', 'flac', 'ogg', 'opus', 'aac', 'wma',
+  // video
+  'mp4', 'mov', 'avi', 'mkv', 'webm', 'mpeg', 'mpg', 'wmv',
+  // images
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'bmp', 'svg',
+  // archives
+  'zip', '7z', 'rar', 'tar', 'gz', 'bz2',
+  // misc binaries
+  'exe', 'dll', 'so', 'dylib', 'class',
+]);
+
+async function extractEmpty(_buf: Buffer): Promise<string> {
+  return '';
+}
 
 /**
  * Detects which extractor to use. We prefer MIME over filename because
@@ -36,8 +81,18 @@ export function pickExtractor(
     return extractHtml;
   }
 
-  // text/plain, text/markdown, application/json, audio/* (binary — will
-  // return garbage but at least the row still lands), anything else.
+  // Binary container formats — return empty text. The row still lands in
+  // the catalog with the blob in Object Storage; only the `chunks` and
+  // text columns stay empty.
+  if (BINARY_MIME_PREFIXES.some((p) => mime.startsWith(p))) {
+    return extractEmpty;
+  }
+  if (BINARY_EXTENSIONS.has(ext)) {
+    return extractEmpty;
+  }
+
+  // text/plain, text/markdown, application/json, application/javascript,
+  // application/xml, etc. — safe to UTF-8 decode.
   return extractText;
 }
 
