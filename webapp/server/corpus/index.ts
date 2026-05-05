@@ -14,6 +14,14 @@ export { storageHealthCheck, putObject, createReadPar } from './oci/storage.js';
 export { genaiHealthCheck, embedTexts } from './oci/genai.js';
 export type { EmbedInputType } from './oci/genai.js';
 
+export { searchCorpus } from './search.js';
+export type {
+  SearchOptions,
+  SearchResult,
+  SearchHit,
+  SearchSnippet,
+} from './search.js';
+
 import { getCorpusConfig } from './config.js';
 import { dbHealthCheck } from './oci/db.js';
 import { storageHealthCheck } from './oci/storage.js';

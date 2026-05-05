@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { hasSession, clearSession } from './lib/session-store';
+import { getCorpusHealth } from './lib/corpus';
 import SessionGate from './components/SessionGate';
 import SessionPage from './pages/SessionPage';
 import NotebooksPage from './pages/NotebooksPage';
@@ -9,6 +10,7 @@ import GeneratePage from './pages/GeneratePage';
 import AnalyzePage from './pages/AnalyzePage';
 import ChatPage from './pages/ChatPage';
 import DiagnosePage from './pages/DiagnosePage';
+import CorpusPage from './pages/CorpusPage';
 
 interface NavItem {
   to: string;
@@ -44,17 +46,39 @@ function groupBy(items: NavItem[]): Record<string, NavItem[]> {
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(hasSession());
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [corpusEnabled, setCorpusEnabled] = useState<boolean>(false);
   const location = useLocation();
 
   useEffect(() => {
     setMobileNavOpen(false);
   }, [location.pathname]);
 
+  // Probe corpus health once after auth — gates the Corpus nav entry.
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    getCorpusHealth()
+      .then((h) => {
+        if (!cancelled) setCorpusEnabled(Boolean(h.enabled));
+      })
+      .catch(() => {
+        // Silently treat probe failure as "disabled" — keeps the rest of
+        // the app fully functional even if the corpus stack is offline.
+        if (!cancelled) setCorpusEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authed]);
+
   if (!authed) {
     return <SessionGate onSession={() => setAuthed(true)} />;
   }
 
-  const groups = groupBy(NAV);
+  const navItems = corpusEnabled
+    ? [...NAV, { to: '/corpus', label: 'Corpus search', group: 'Research' }]
+    : NAV;
+  const groups = groupBy(navItems);
 
   return (
     <div className="flex min-h-screen bg-slate-50">
@@ -133,6 +157,7 @@ export default function App() {
             <Route path="/chat/:id" element={<ChatPage />} />
             <Route path="/session" element={<SessionPage />} />
             <Route path="/diagnose" element={<DiagnosePage />} />
+            {corpusEnabled && <Route path="/corpus" element={<CorpusPage />} />}
             <Route path="*" element={<Navigate to="/library" replace />} />
           </Routes>
         </main>

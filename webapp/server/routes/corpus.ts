@@ -8,12 +8,14 @@
 
 import { Router } from 'express';
 import multer from 'multer';
+import oracledb from 'oracledb';
 import { asyncHandler } from '../lib/handler.js';
 import {
   corpusHealth,
   getCorpusConfig,
   withConnection,
   createReadPar,
+  searchCorpus,
 } from '../corpus/index.js';
 import {
   ingestArtifact,
@@ -199,16 +201,19 @@ corpusRouter.get(
           ${where}
           ORDER BY created_at DESC
           OFFSET :off ROWS FETCH NEXT :lim ROWS ONLY`;
+      // OUT_FORMAT_OBJECT keeps column names as uppercase keys so the
+      // client sees `ID`, `KIND`, `OBJECT_NAME`, ... instead of tuples.
       const listResult = await conn.execute<Record<string, unknown>>(listSql, binds, {
-        // OUT_FORMAT_OBJECT keeps column names as uppercase keys.
+        outFormat: oracledb.OUT_FORMAT_OBJECT,
       });
       const countResult = await conn.execute<{ CNT: number }>(
         `SELECT COUNT(*) AS cnt FROM artifacts a ${where}`,
         binds,
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
       );
       return {
         items: listResult.rows ?? [],
-        total: (countResult.rows?.[0] as unknown as number[] | undefined)?.[0] ?? 0,
+        total: countResult.rows?.[0]?.CNT ?? 0,
       };
     });
 
@@ -237,16 +242,12 @@ corpusRouter.get(
       return;
     }
     const row = await withConnection(cfg, async (conn) => {
-      const result = await conn.execute<{
-        ID: string;
-        OBJECT_NAME: string;
-        BUCKET: string;
-      }>(
+      const result = await conn.execute<Record<string, unknown>>(
         `SELECT id, kind, origin, title, notebook_id, artifact_id, bucket,
                 object_name, mime_type, size_bytes, tags, metadata, created_at
            FROM artifacts WHERE id = :id`,
         { id },
-        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
       );
       return result.rows?.[0];
     });
@@ -262,10 +263,66 @@ corpusRouter.get(
     }
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1h
     const par = await createReadPar(cfg, objectName, expiresAt);
+    // OCI's PAR `fullPath` sometimes comes back as a complete URL
+    // (https://<ns>.objectstorage.<region>.oci.customer-oci.com/p/...)
+    // and sometimes as a path-only (`/p/...`). Handle both shapes.
+    const downloadUrl = /^https?:\/\//i.test(par.fullPath)
+      ? par.fullPath
+      : `https://objectstorage.${cfg.ociRegion}.oraclecloud.com${par.fullPath}`;
     res.json({
       artifact: row,
-      downloadUrl: `https://objectstorage.${cfg.ociRegion}.oraclecloud.com${par.fullPath}`,
+      downloadUrl,
       expiresAt: par.expiresAt.toISOString(),
     });
+  }),
+);
+
+/**
+ * POST /api/corpus/search  — JSON body
+ *
+ * Body:
+ *   query              (required) natural-language search query
+ *   kind               (optional) filter by single artifact kind
+ *   notebookId         (optional) filter by notebook linkage
+ *   candidateLimit     (optional) chunks to scan before grouping (default 40, max 200)
+ *   artifactLimit      (optional) artifacts to return (default 10, max 50)
+ *   snippetsPerArtifact(optional) chunks per artifact (default 3, max 10)
+ *   maxDistance        (optional) cosine distance ceiling (e.g. 0.7)
+ *
+ * Returns `{ query, hits: [{ artifact, bestDistance, snippets }], ... }`
+ * sorted by best distance ascending (most-relevant first).
+ */
+corpusRouter.post(
+  '/search',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const query = typeof body['query'] === 'string' ? body['query'].trim() : '';
+    if (query.length === 0) {
+      res.status(400).json({ error: 'query is required' });
+      return;
+    }
+
+    const result = await searchCorpus(cfg, {
+      query,
+      kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
+      notebookId:
+        typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
+      candidateLimit:
+        typeof body['candidateLimit'] === 'number' ? body['candidateLimit'] : undefined,
+      artifactLimit:
+        typeof body['artifactLimit'] === 'number' ? body['artifactLimit'] : undefined,
+      snippetsPerArtifact:
+        typeof body['snippetsPerArtifact'] === 'number'
+          ? body['snippetsPerArtifact']
+          : undefined,
+      maxDistance:
+        typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,
+    });
+    res.json(result);
   }),
 );
