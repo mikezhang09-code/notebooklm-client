@@ -8,6 +8,8 @@
 
 Standalone CLI, library, **and local Web GUI** for Google's [NotebookLM](https://notebooklm.google.com/) — generate audio podcasts, reports, slides, quizzes, videos, infographics, data tables, flashcards, analyze content, manage notebooks, and chat.
 
+> **New in v0.5.0** — an optional **Research Corpus** on the Web GUI: every artifact you download (and anything you upload) is auto-ingested into Oracle ADB + Object Storage with 1024-dim multilingual embeddings, then made searchable semantically across notebooks. Library page for curation (rename, retag, delete, share links), deep-link cross-references back to the originating notebook. See [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional) in the webapp README.
+>
 > **New in v0.4.0** — a local-first webapp that wraps every CLI command in a friendly UI, plus a unified `client.downloadArtifact()` API. See [Web GUI](#web-gui) below.
 
 ## Requirements
@@ -113,6 +115,11 @@ Features:
 - **One-click download** of any existing artifact (audio, report, quiz, flashcards, infographic, slides, data-table, video)
 - Analyze & chat with citations
 - Session verify / refresh / download, diagnose page
+- **Research Corpus** (optional, requires Oracle ADB + OCI Object Storage + OCI GenAI):
+  - Auto-ingests every downloaded artifact in the background
+  - Manual `/corpus/upload` page for any PDF/DOCX/HTML/MD/TXT/CSV/JSON
+  - `/corpus` semantic search with kind + distance filters, notebook cross-links
+  - `/corpus/library` with rename, retag, per-row + bulk delete, shareable links (1 h – 7 d TTL)
 
 Deploy to Hugging Face Spaces:
 
@@ -401,6 +408,8 @@ MIT
 
 Google [NotebookLM](https://notebooklm.google.com/) 的独立 CLI、编程库 **和本地 Web GUI** —— 生成音频播客、报告、幻灯片、测验、视频、信息图、数据表、闪卡，分析内容、管理笔记本、对话。
 
+> **v0.5.0 新增** —— Web GUI 可选的 **研究语料库（Research Corpus）**：每次下载的产物（以及任意上传的文档）自动写入 Oracle ADB + Object Storage，生成 1024 维多语言向量嵌入，跨所有笔记本做语义搜索。Library 页面支持整理（重命名、改标签、删除、生成分享链接），每个条目都有反向链接跳回原始笔记本。详见 webapp README 中的 [Research corpus](./webapp/README.md#research-corpus-oracle-adb--object-storage--optional) 一节。
+>
 > **v0.4.0 新增** —— 本地网页界面，封装全部 CLI 命令，并提供统一的 `client.downloadArtifact()` API。详见下方 [Web GUI](#web-gui-1)。
 
 ## 环境要求
@@ -506,6 +515,11 @@ npm run webapp:start
 - **一键下载**任意已有产物（音频、报告、测验、闪卡、信息图、幻灯片、数据表、视频）
 - 分析、带引用的对话
 - Session 验证 / 刷新 / 下载，诊断页面
+- **研究语料库**（可选，需要 Oracle ADB + OCI Object Storage + OCI GenAI）：
+  - 下载产物时后台自动入库
+  - `/corpus/upload` 页面手动上传 PDF/DOCX/HTML/MD/TXT/CSV/JSON
+  - `/corpus` 跨笔记本语义搜索，支持类型、距离阈值过滤，以及返回原始笔记本的反向链接
+  - `/corpus/library` 支持重命名、改标签、逐条/批量删除、生成分享链接（1 小时 – 7 天 TTL）
 
 部署到 Hugging Face Spaces：
 
@@ -789,6 +803,28 @@ MIT
 ---
 
 ## Changelog / 更新日志
+
+### v0.5.0 (2026-05-05)
+
+- **Research corpus (optional)** — opt-in personal knowledge base on top of Oracle Autonomous Database 23ai + OCI Object Storage + OCI Generative AI embeddings (`cohere.embed-multilingual-v3.0`, 1024-dim). Fully optional: if the env vars aren't set the webapp runs unchanged.
+- **Auto-ingest on download** — every artifact you download through the UI is embedded and indexed in the background; a `✓ Saved to research corpus` badge lands on the row once it's queryable. Dedup via `(notebook_id, artifact_id)` unique index.
+- **Three new pages** under a `Research` sidebar group:
+  - `/corpus` — semantic kNN search grouped per artifact, distance-scored snippets, kind + max-distance filters, "originating notebook" cross-links.
+  - `/corpus/library` — paginated table with kind / origin / title filters, row checkboxes, bulk delete, detail drawer with rename, retag, per-row delete, PAR download, and share-link generator (1 h – 7 d TTL).
+  - `/corpus/upload` — drag-and-drop upload for PDF / DOCX / HTML / MD / TXT / CSV / JSON with tag editor.
+- **New REST endpoints** — `POST /api/corpus/{ingest,search}`, `GET /api/corpus/artifacts[/:id]`, `PATCH /api/corpus/artifacts/:id`, `DELETE /api/corpus/artifacts/:id`, `POST /api/corpus/artifacts/:id/share`, `GET /api/corpus/health`.
+- **OCI plumbing** — node-oracledb 6.x Thin mode with wallet-based mTLS (no Oracle Instant Client required), cross-region GenAI when the home region doesn't host embeddings (e.g. Tokyo → Osaka), storage PAR minting with idempotent `deleteObject`.
+
+---
+
+- **研究语料库（可选）** —— 基于 Oracle Autonomous Database 23ai + OCI Object Storage + OCI Generative AI 向量嵌入（`cohere.embed-multilingual-v3.0`，1024 维）的个人知识库。完全可选：未配置环境变量时 webapp 行为不变。
+- **下载自动入库** —— 通过 UI 下载的每个产物都会在后台嵌入并索引；入库完成后行上会显示 `✓ Saved to research corpus` 标记。通过 `(notebook_id, artifact_id)` 唯一索引去重。
+- **三个新页面**（侧边栏 `Research` 分组）：
+  - `/corpus` —— 按产物聚合的语义 kNN 搜索，带距离分值的片段展示，类型 + 距离阈值过滤，指向原始笔记本的反向链接。
+  - `/corpus/library` —— 分页列表，按类型 / 来源 / 标题过滤，行复选框、批量删除，详情抽屉支持重命名、改标签、单条删除、PAR 下载、分享链接（1 小时 – 7 天 TTL）。
+  - `/corpus/upload` —— 拖拽上传 PDF / DOCX / HTML / MD / TXT / CSV / JSON，支持标签编辑。
+- **新 REST 端点** —— `POST /api/corpus/{ingest,search}`、`GET /api/corpus/artifacts[/:id]`、`PATCH /api/corpus/artifacts/:id`、`DELETE /api/corpus/artifacts/:id`、`POST /api/corpus/artifacts/:id/share`、`GET /api/corpus/health`。
+- **OCI 基础设施** —— node-oracledb 6.x Thin 模式 + 钱包 mTLS（无需安装 Oracle Instant Client），当主区域不支持嵌入时自动跨区域调用 GenAI（如 Tokyo → Osaka），幂等的 `deleteObject`，按需生成的 PAR URL。
 
 ### v0.4.0 (2026-05-03)
 

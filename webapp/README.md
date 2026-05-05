@@ -87,9 +87,24 @@ you upload) to a personal research corpus backed by:
 
 The subsystem is **fully optional**: if no env vars are set, the webapp
 runs exactly as before and none of the OCI SDKs are reached. Set them and
-the ingest / search endpoints come online. A `Corpus` page in the sidebar
-with search + per-artifact `Save to corpus` checkboxes lands in the next
-milestone.
+a **Research** section appears in the sidebar with three pages:
+
+- **Search** (`/corpus`) — semantic search over every ingested chunk with
+  per-snippet distance scores, kind + threshold filters, detail panel
+  that mints a fresh download PAR and a shareable link.
+- **Library** (`/corpus/library`) — paginated table of every artifact
+  with kind / origin / title filters, row selection for bulk delete,
+  inline rename + retag, per-row delete, and a cross-link badge that
+  jumps back to the originating NotebookLM notebook when applicable.
+- **Upload** (`/corpus/upload`) — drag-and-drop ingest for any document
+  (PDF, DOCX, HTML, MD, TXT, CSV, JSON). Auto-fills the title from the
+  filename and lets you pick kind + tags before submitting.
+
+In addition, every artifact you **download** from the notebook detail
+page is automatically ingested into the corpus in the background — the
+row shows a small `✓ Saved to research corpus` badge once indexing
+completes. Ingesting the same NotebookLM artifact twice is a no-op
+thanks to a `(notebook_id, artifact_id)` unique index.
 
 ### Setup (one-time)
 
@@ -141,10 +156,30 @@ region can take 1–5 minutes.
 ### Endpoints
 
 ```
-GET  /api/corpus/health                  subsystem status (db + storage + genai)
-POST /api/corpus/ingest                  multipart: file + title + kind [+ origin/tags/metadata]
-GET  /api/corpus/artifacts               list, filter by kind/origin/notebookId, paginated
-GET  /api/corpus/artifacts/:id           detail + short-lived PAR download URL
+GET    /api/corpus/health                       subsystem status (db + storage + genai)
+
+POST   /api/corpus/ingest                       multipart: file + title + kind [+ origin/tags/metadata]
+                                                Dedupes on (notebook_id, artifact_id) for NotebookLM rows.
+
+GET    /api/corpus/artifacts                    list; filters: kind, origin, notebookId; paginated
+GET    /api/corpus/artifacts/:id                detail + short-lived PAR download URL (1 h TTL)
+PATCH  /api/corpus/artifacts/:id                body: { title?, tags? }
+DELETE /api/corpus/artifacts/:id                row + chunks + Object Storage blob
+POST   /api/corpus/artifacts/:id/share          body: { ttlHours? 1..168 } → { shareUrl, expiresAt }
+
+POST   /api/corpus/search                       body: { query, kind?, notebookId?, candidateLimit?,
+                                                         artifactLimit?, snippetsPerArtifact?,
+                                                         maxDistance? }
+                                                Semantic kNN over embeddings, grouped per artifact.
+```
+
+Auto-ingest is also wired into the notebook download route:
+
+```
+POST /api/notebooks/:id/artifacts/:artifactId/download
+     body: { outputDir?, notebookTitle?, artifactTitle? }
+     → { jobId, files, ..., corpus: { status } }
+     status ∈ "scheduled" | "disabled" | "skipped_kind" | "no_file"
 ```
 
 Standalone CLIs (for bootstrapping / debugging, run from `webapp/`):
