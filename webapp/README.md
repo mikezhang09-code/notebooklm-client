@@ -195,6 +195,10 @@ POST /api/notebooks/:id/artifacts/:artifactId/download
      status ∈ "scheduled" | "disabled" | "skipped_kind" | "no_file"
 ```
 
+Deeper engineering reference for the chat pipeline:
+[`docs/corpus-chat.md`](./docs/corpus-chat.md) — full request lifecycle, SQL,
+prompt assembly, citation re-keying, perf / cost knobs, and a file map.
+
 Standalone CLIs (for bootstrapping / debugging, run from `webapp/`):
 
 ```bash
