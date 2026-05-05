@@ -27,8 +27,10 @@ import {
 } from '../corpus/index.js';
 import {
   ingestArtifact,
+  saveChatArtifact,
   type ArtifactKind,
   type ArtifactOrigin,
+  type SavedChatTurn,
 } from '../corpus/ingest.js';
 
 export const corpusRouter = Router();
@@ -49,6 +51,7 @@ const ALLOWED_KINDS: ArtifactKind[] = [
   'slides',
   'data_table',
   'upload',
+  'qa',
 ];
 const ALLOWED_ORIGINS: ArtifactOrigin[] = ['notebooklm', 'upload'];
 
@@ -680,5 +683,146 @@ corpusRouter.post(
       }
     })();
     res.status(202).json({ id, status: 'queued' });
+  }),
+);
+
+/**
+ * POST /api/corpus/chat/save
+ *
+ * Persist a NotebookLM chat conversation as a `kind='qa'` corpus artifact
+ * so it can be searched + chatted-against later. Idempotent on
+ * `sessionId`: re-saving the same conversation updates the existing
+ * row (chunks deleted + re-embedded + object overwritten) instead of
+ * creating duplicates.
+ *
+ * Request body (JSON):
+ * {
+ *   notebookId:    string  (required)  NotebookLM notebook ID
+ *   notebookTitle: string  (required)  display name of the notebook
+ *   sessionId:     string  (required)  client-minted UUID per conversation
+ *   title:         string  (required)  user-edited artifact title
+ *   turns: Array<{
+ *     role:      'user' | 'assistant',
+ *     content:   string,
+ *     citations?: Array<{ index: number, excerpt: string, sourceId: string|null }>
+ *   }>  (required, non-empty)
+ * }
+ *
+ * Response 200:
+ * { id: string, sessionId: string, chunkCount: number, created: boolean }
+ *
+ *   `created=true`  → first save for this sessionId (INSERT)
+ *   `created=false` → updated an existing row (UPDATE)
+ */
+corpusRouter.post(
+  '/chat/save',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const notebookId =
+      typeof body['notebookId'] === 'string' ? body['notebookId'].trim() : '';
+    const notebookTitle =
+      typeof body['notebookTitle'] === 'string'
+        ? body['notebookTitle'].trim()
+        : '';
+    const sessionId =
+      typeof body['sessionId'] === 'string' ? body['sessionId'].trim() : '';
+    const title =
+      typeof body['title'] === 'string' ? body['title'].trim() : '';
+    const turnsRaw = Array.isArray(body['turns']) ? body['turns'] : null;
+
+    if (!notebookId) {
+      res.status(400).json({ error: 'notebookId is required' });
+      return;
+    }
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId is required' });
+      return;
+    }
+    // Loose UUID-ish sanity check — keeps obvious garbage out without
+    // pinning us to a specific generator.
+    if (sessionId.length < 8 || sessionId.length > 64) {
+      res.status(400).json({ error: 'sessionId must be 8–64 chars' });
+      return;
+    }
+    if (!title) {
+      res.status(400).json({ error: 'title is required' });
+      return;
+    }
+    if (!turnsRaw || turnsRaw.length === 0) {
+      res.status(400).json({ error: 'turns must be a non-empty array' });
+      return;
+    }
+
+    // Coerce + validate each turn. We're strict about shape here because
+    // bad data flows straight into embed + DB and is annoying to clean up.
+    const turns: SavedChatTurn[] = [];
+    for (let i = 0; i < turnsRaw.length; i++) {
+      const t = turnsRaw[i] as Record<string, unknown> | null;
+      if (!t || typeof t !== 'object') {
+        res.status(400).json({ error: `turns[${i}] must be an object` });
+        return;
+      }
+      const role = t['role'];
+      const content = t['content'];
+      if (role !== 'user' && role !== 'assistant') {
+        res
+          .status(400)
+          .json({ error: `turns[${i}].role must be "user" or "assistant"` });
+        return;
+      }
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        res
+          .status(400)
+          .json({ error: `turns[${i}].content must be a non-empty string` });
+        return;
+      }
+      const citationsRaw = Array.isArray(t['citations']) ? t['citations'] : [];
+      const citations = citationsRaw
+        .map((c) => {
+          const cc = c as Record<string, unknown> | null;
+          if (!cc || typeof cc !== 'object') return null;
+          const idx = typeof cc['index'] === 'number' ? cc['index'] : null;
+          const excerpt = typeof cc['excerpt'] === 'string' ? cc['excerpt'] : '';
+          const sid =
+            typeof cc['sourceId'] === 'string'
+              ? cc['sourceId']
+              : cc['sourceId'] === null
+              ? null
+              : null;
+          if (idx === null) return null;
+          return { index: idx, excerpt, sourceId: sid };
+        })
+        .filter((c): c is NonNullable<typeof c> => c !== null);
+      turns.push({ role, content, citations });
+    }
+
+    // At least one user turn — guards against the empty-state save.
+    if (!turns.some((t) => t.role === 'user')) {
+      res.status(400).json({ error: 'at least one user turn is required' });
+      return;
+    }
+
+    try {
+      const result = await saveChatArtifact(cfg, {
+        notebookId,
+        notebookTitle: notebookTitle || 'NotebookLM',
+        sessionId,
+        title,
+        turns,
+      });
+      res.json(result);
+    } catch (err) {
+      console.warn(
+        '[corpus] /chat/save failed:',
+        err instanceof Error ? err.message : err,
+      );
+      const msg = err instanceof Error ? err.message : 'save failed';
+      res.status(500).json({ error: msg });
+    }
   }),
 );

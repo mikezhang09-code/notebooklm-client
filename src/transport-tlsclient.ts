@@ -21,6 +21,13 @@ export interface TlsClientTransportOptions {
   profile?: string;
   /** Proxy URL (http, socks5, socks5h). Passed as proxyUrl to tls-client. */
   proxy?: string;
+  /**
+   * Per-request read timeout passed through to the underlying Go
+   * tls-client (`net/http.Client.Timeout`). Long NotebookLM chat
+   * answers — especially across many sources or in Chinese — can take
+   * 60-120s, which is why we expose this knob. Default: 60 seconds.
+   */
+  timeoutSeconds?: number;
   onSessionExpired?: () => Promise<NotebookRpcSession>;
 }
 
@@ -76,6 +83,7 @@ export class TlsClientTransport implements Transport {
   private session: NotebookRpcSession;
   private profile: string;
   private proxy?: string;
+  private timeoutSeconds: number;
   private onSessionExpired?: () => Promise<NotebookRpcSession>;
   private moduleClient: ModuleClientInstance | null = null;
   private sessionClient: SessionClientInstance | null = null;
@@ -84,6 +92,12 @@ export class TlsClientTransport implements Transport {
     this.session = opts.session;
     this.profile = opts.profile ?? 'chrome_131';
     this.proxy = opts.proxy;
+    // Keep the 60s default for back-compat with existing callers;
+    // the webapp overrides this to ~180s for NotebookLM chat.
+    this.timeoutSeconds =
+      typeof opts.timeoutSeconds === 'number' && opts.timeoutSeconds > 0
+        ? opts.timeoutSeconds
+        : 60;
     this.onSessionExpired = opts.onSessionExpired;
   }
 
@@ -93,7 +107,7 @@ export class TlsClientTransport implements Transport {
 
     const clientOptions: Record<string, unknown> = {
       tlsClientIdentifier: this.profile,
-      timeoutSeconds: 60,
+      timeoutSeconds: this.timeoutSeconds,
       ...(this.proxy ? { proxyUrl: this.proxy } : {}),
       followRedirects: false,
       headerOrder: [

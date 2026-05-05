@@ -30,7 +30,8 @@ export type ArtifactKind =
   | 'infographic'
   | 'slides'
   | 'data_table'
-  | 'upload';
+  | 'upload'
+  | 'qa';
 
 export type ArtifactOrigin = 'notebooklm' | 'upload';
 
@@ -338,5 +339,254 @@ export async function ingestArtifactWith(
     chunkCount: chunks.length,
     textPreview: rawText.slice(0, 200),
     sizeBytes: input.buffer.length,
+  };
+}
+
+// ────────────────────────────────────────── saved NotebookLM chats (qa) ──
+
+/** One turn of a saved NotebookLM conversation. */
+export interface SavedChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  /** Inline citation records from NotebookLM (assistant turns only). */
+  citations?: Array<{ index: number; excerpt: string; sourceId: string | null }>;
+}
+
+export interface SaveChatArtifactInput {
+  /** NotebookLM notebook the conversation was against. */
+  notebookId: string;
+  /** Human-friendly notebook name; stored in metadata + the markdown body. */
+  notebookTitle: string;
+  /**
+   * Client-minted UUID that identifies this conversation across re-saves.
+   * On re-save with the same sessionId, the existing artifact is updated
+   * in place (chunks deleted + re-embedded + object overwritten) rather
+   * than duplicated.
+   */
+  sessionId: string;
+  /** User-edited title; truncated to 512 chars before insert. */
+  title: string;
+  /** Ordered turns, oldest → newest. Must have at least one user turn. */
+  turns: SavedChatTurn[];
+}
+
+export interface SaveChatArtifactResult {
+  id: string;
+  sessionId: string;
+  chunkCount: number;
+  /** True iff a new row was created; false if an existing row was updated. */
+  created: boolean;
+}
+
+/**
+ * Render a saved conversation as markdown. Uses `## You` / `## NotebookLM`
+ * headings so the ingest chunker (which is paragraph/heading-aware) splits
+ * cleanly at turn boundaries — each turn becomes its own chunk or two,
+ * which means later retrieval can cite individual turns, not the whole
+ * thread.
+ */
+function renderSavedChatMarkdown(
+  title: string,
+  notebookTitle: string,
+  turns: SavedChatTurn[],
+): string {
+  const when = new Date().toISOString();
+  const turnWord = turns.length === 1 ? 'turn' : 'turns';
+  const parts: string[] = [
+    `# ${title}`,
+    '',
+    `*Saved from NotebookLM chat · ${notebookTitle} · ${when} · ${turns.length} ${turnWord}*`,
+    '',
+  ];
+  for (const t of turns) {
+    const speaker = t.role === 'user' ? 'You' : 'NotebookLM';
+    parts.push(`## ${speaker}`);
+    parts.push('');
+    parts.push(t.content.trim());
+    parts.push('');
+    if (t.role === 'assistant' && t.citations && t.citations.length > 0) {
+      parts.push('**Citations**');
+      parts.push('');
+      for (const c of t.citations) {
+        const excerpt = c.excerpt.replace(/\s+/g, ' ').trim();
+        parts.push(`- [${c.index}] ${excerpt}`);
+      }
+      parts.push('');
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Upsert a saved NotebookLM chat conversation as a `kind='qa'` corpus
+ * artifact.
+ *
+ *   ── idempotency model ─────────────────────────────────────────────────
+ *   We reuse the existing (origin, notebook_id, artifact_id) uniqueness
+ *   contract by synthesising `artifact_id = 'chat:<sessionId>'`. On the
+ *   first save we INSERT; on subsequent saves with the same sessionId we
+ *   UPDATE the row, delete + reinsert chunks, and overwrite the OCI
+ *   object. The sessionId is minted client-side on first save and kept
+ *   in component state, so mid-conversation saves and end-of-conversation
+ *   saves collapse into a single artifact.
+ *
+ *   ── why we don't go through ingestArtifactWith ────────────────────────
+ *   Three reasons:
+ *     1. We already have the text content (we rendered it). Round-tripping
+ *        through extract() + mime detection is pointless overhead.
+ *     2. The existing idempotency path in ingestArtifactWith is a SKIP,
+ *        not an UPDATE. For saved chats we want the opposite semantic.
+ *     3. Saved chats don't run through the M7 transcription enqueue —
+ *        they aren't audio/video. Keeping the code path separate avoids
+ *        future entanglement.
+ */
+export async function saveChatArtifact(
+  cfg: CorpusConfig,
+  input: SaveChatArtifactInput,
+): Promise<SaveChatArtifactResult> {
+  if (!input.notebookId) throw new Error('notebookId is required');
+  if (!input.sessionId) throw new Error('sessionId is required');
+  if (!input.title?.trim()) throw new Error('title is required');
+  if (!input.turns || input.turns.length === 0) {
+    throw new Error('at least one turn is required');
+  }
+
+  const syntheticArtifactId = `chat:${input.sessionId}`;
+  const title = input.title.slice(0, 512);
+
+  // 1) Render + chunk the markdown body.
+  const md = renderSavedChatMarkdown(title, input.notebookTitle, input.turns);
+  const buffer = Buffer.from(md, 'utf8');
+  const chunks = chunkText(md);
+
+  // 2) Look up an existing row for this conversation.
+  const existing = await findExistingByArtifactPair(
+    cfg,
+    input.notebookId,
+    syntheticArtifactId,
+  );
+  const artifactId = existing?.id ?? newId();
+  const objectName = existing?.objectName ?? `${artifactId}/chat.md`;
+
+  // 3) Build metadata blob (stored verbatim in the artifacts.metadata
+  //    JSON column — powers the library drawer + future analytics).
+  const firstUserTurn = input.turns.find((t) => t.role === 'user');
+  const metadata = {
+    sessionId: input.sessionId,
+    notebookTitle: input.notebookTitle,
+    turnCount: input.turns.length,
+    firstQuestion: (firstUserTurn?.content ?? '').slice(0, 200),
+    lastSavedAt: new Date().toISOString(),
+  };
+
+  // 4) Upload + embed in parallel — both are network-bound, overlapping
+  //    shaves ~0.5–1s off the end-to-end save. Matches the optimisation
+  //    in ingestArtifactWith.
+  //
+  //    NB: the `charset=utf-8` suffix is load-bearing. Without it browsers
+  //    opening the PAR URL fall back to a locale-dependent default
+  //    (Windows-1252 / GBK on a zh-CN system) and mojibake every non-ASCII
+  //    character, even though the bytes on disk are pure UTF-8. Seen in
+  //    practice with Chinese prompts saved from the Chat page.
+  const chatMime = 'text/markdown; charset=utf-8';
+  const [, vectors] = await Promise.all([
+    putObject(cfg, objectName, buffer, chatMime, buffer.length),
+    chunks.length > 0
+      ? embedTexts(cfg, chunks.map((c) => c.text), 'SEARCH_DOCUMENT')
+      : Promise.resolve([] as number[][]),
+  ]);
+  if (vectors.length !== chunks.length) {
+    throw new Error(
+      `embed count mismatch: ${vectors.length} vectors for ${chunks.length} chunks`,
+    );
+  }
+
+  // 5) DB transaction: upsert artifact row + replace chunks.
+  await withConnection(cfg, async (conn) => {
+    if (existing) {
+      await conn.execute(
+        `UPDATE artifacts
+            SET title      = :t,
+                size_bytes = :sz,
+                metadata   = :m,
+                updated_at = SYSTIMESTAMP
+          WHERE id = :id`,
+        {
+          id: artifactId,
+          t: title,
+          sz: buffer.length,
+          m: JSON.stringify(metadata),
+        },
+        { autoCommit: false },
+      );
+      await conn.execute(
+        `DELETE FROM artifact_chunks WHERE artifact_id = :aid`,
+        { aid: artifactId },
+        { autoCommit: false },
+      );
+    } else {
+      await conn.execute(
+        `INSERT INTO artifacts
+           (id, kind, origin, title, notebook_id, artifact_id,
+            bucket, object_name, mime_type, size_bytes, tags, metadata)
+         VALUES
+           (:a_id, 'qa', 'notebooklm', :a_title, :a_nb, :a_aid,
+            :a_bucket, :a_obj, :a_mime, :a_sz, :a_tags, :a_meta)`,
+        {
+          a_id: artifactId,
+          a_title: title,
+          a_nb: input.notebookId,
+          a_aid: syntheticArtifactId,
+          a_bucket: cfg.ociBucket,
+          a_obj: objectName,
+          a_mime: chatMime,
+          a_sz: buffer.length,
+          a_tags: JSON.stringify(['chat']),
+          a_meta: JSON.stringify(metadata),
+        },
+        { autoCommit: false },
+      );
+    }
+
+    if (chunks.length > 0) {
+      const rows = chunks.map((c, i) => ({
+        cid: newId(),
+        aid: artifactId,
+        ord: c.ordinal,
+        txt: c.text,
+        cs: c.charStart,
+        ce: c.charEnd,
+        tc: c.tokenEstimate,
+        emb: Float32Array.from(vectors[i] as number[]),
+      }));
+      await conn.executeMany(
+        `INSERT INTO artifact_chunks
+           (id, artifact_id, ordinal, text, char_start, char_end, token_count, embedding)
+         VALUES (:cid, :aid, :ord, :txt, :cs, :ce, :tc, :emb)`,
+        rows as unknown as oracledb.BindParameters[],
+        {
+          bindDefs: {
+            cid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
+            aid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
+            ord: { type: oracledb.DB_TYPE_NUMBER },
+            txt: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 32000 },
+            cs: { type: oracledb.DB_TYPE_NUMBER },
+            ce: { type: oracledb.DB_TYPE_NUMBER },
+            tc: { type: oracledb.DB_TYPE_NUMBER },
+            emb: { type: oracledb.DB_TYPE_VECTOR },
+          },
+          autoCommit: false,
+        },
+      );
+    }
+
+    await conn.commit();
+  });
+
+  return {
+    id: artifactId,
+    sessionId: input.sessionId,
+    chunkCount: chunks.length,
+    created: !existing,
   };
 }

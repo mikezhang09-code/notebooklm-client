@@ -33,6 +33,7 @@ const KIND_LABELS: Record<string, string> = {
   slides: 'Slides',
   data_table: 'Data table',
   upload: 'Upload',
+  qa: 'Q&A',
 };
 
 const PAGE_SIZE = 25;

@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import type { SourceInput } from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
@@ -13,7 +14,12 @@ import { openSseStream } from '../lib/sse.js';
 
 export const analyzeRouter = Router();
 
-const upload = multer({ limits: { fileSize: 100 * 1024 * 1024 } });
+// Disk storage (NOT memory) — the notebooklm-client lib's `SourceInput`
+// of type `'file'` requires an on-disk `filePath`. Without an explicit
+// `dest`, multer 1.x silently falls back to memoryStorage and
+// `req.file.path` is undefined, which surfaces downstream as the
+// "Invalid source — provide url, text, file upload, …" error.
+const upload = multer({ dest: tmpdir(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 interface AnalyzeBody {
   source?: {

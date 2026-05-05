@@ -29,6 +29,7 @@ const KIND_LABELS: Record<ArtifactKind, string> = {
   slides: 'Slides',
   data_table: 'Data table',
   upload: 'Upload (generic)',
+  qa: 'Q&A',
 };
 
 function defaultTitleFromName(filename: string): string {

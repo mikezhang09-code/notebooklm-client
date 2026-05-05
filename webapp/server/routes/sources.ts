@@ -9,6 +9,7 @@ import { asyncHandler } from '../lib/handler.js';
 import { parseSessionHeader, SessionHeaderError } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
 import { unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import type { NotebookClient } from 'notebooklm-client';
 
 interface SourceAddOpts {
@@ -41,8 +42,11 @@ async function runSourceAdd(
 
 export const sourcesRouter = Router({ mergeParams: true });
 
+// Disk storage (NOT memory) — `addFileSource()` requires an on-disk path.
+// `dest: undefined` is falsy and would silently fall back to memoryStorage;
+// pass an explicit tmpdir() so `req.file.path` is populated.
 const upload = multer({
-  dest: undefined, // let multer pick os.tmpdir()
+  dest: tmpdir(),
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
 });
 

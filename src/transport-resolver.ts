@@ -21,6 +21,11 @@ export interface TransportFactoryOptions {
   curlBinaryPath?: string;
   /** tls-client Chrome profile identifier. Default: 'chrome_131'. */
   tlsClientProfile?: string;
+  /**
+   * Per-request read timeout for tls-client (seconds). Only honoured
+   * when the selected tier is `tls-client`. Default: 60.
+   */
+  timeoutSeconds?: number;
   /** Proxy URL (http, socks5, socks5h). Passed to the transport layer. */
   proxy?: string;
   /** Called when session tokens expire. */
@@ -68,6 +73,7 @@ export async function createTransport(
         session: opts.session,
         profile: opts.tlsClientProfile,
         proxy: opts.proxy,
+        timeoutSeconds: opts.timeoutSeconds,
         onSessionExpired: opts.onSessionExpired,
       });
       await t.init();

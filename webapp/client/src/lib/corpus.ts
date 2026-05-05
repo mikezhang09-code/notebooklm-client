@@ -49,7 +49,8 @@ export type ArtifactKind =
   | 'infographic'
   | 'slides'
   | 'data_table'
-  | 'upload';
+  | 'upload'
+  | 'qa';
 
 export const ARTIFACT_KINDS: ArtifactKind[] = [
   'audio',
@@ -61,6 +62,7 @@ export const ARTIFACT_KINDS: ArtifactKind[] = [
   'slides',
   'data_table',
   'upload',
+  'qa',
 ];
 
 export interface SearchOptions {
@@ -318,4 +320,46 @@ export function transcribeArtifact(id: string): Promise<TranscribeResult> {
     `/api/corpus/artifacts/${encodeURIComponent(id)}/transcribe`,
     {},
   );
+}
+
+// ───────────────────────────────────────────────── save NotebookLM chat ──
+
+/**
+ * One turn of a NotebookLM conversation, in the shape the save endpoint
+ * expects. Mirrors `SavedChatTurn` on the server.
+ */
+export interface SavedChatTurnPayload {
+  role: 'user' | 'assistant';
+  content: string;
+  citations?: Array<{
+    index: number;
+    excerpt: string;
+    sourceId: string | null;
+  }>;
+}
+
+export interface SaveChatRequest {
+  notebookId: string;
+  notebookTitle: string;
+  /** Client-minted UUID; same value across re-saves of the same thread. */
+  sessionId: string;
+  title: string;
+  turns: SavedChatTurnPayload[];
+}
+
+export interface SaveChatResult {
+  id: string;
+  sessionId: string;
+  chunkCount: number;
+  /** True iff a new artifact row was created; false on update-in-place. */
+  created: boolean;
+}
+
+/**
+ * Persist a NotebookLM chat conversation to the corpus as a `kind='qa'`
+ * artifact. Idempotent on `sessionId` — second call with the same
+ * sessionId updates the existing artifact instead of creating a duplicate.
+ */
+export function saveChatToCorpus(req: SaveChatRequest): Promise<SaveChatResult> {
+  return apiJson<SaveChatResult>('/api/corpus/chat/save', req);
 }

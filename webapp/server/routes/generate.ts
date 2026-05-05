@@ -7,6 +7,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { readdir, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename } from 'node:path';
 import type { NotebookClient, SourceInput, WorkflowProgress } from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
@@ -16,7 +17,11 @@ import { createJob } from '../lib/job-store.js';
 
 export const generateRouter = Router();
 
-const upload = multer({ limits: { fileSize: 100 * 1024 * 1024 } });
+// Disk storage (NOT memory) — the notebooklm-client lib's `SourceInput`
+// of type `'file'` requires an on-disk `filePath`. Without an explicit
+// `dest`, multer 1.x falls back to memoryStorage and `req.file.path`
+// is undefined, surfacing as "Invalid source — …" downstream.
+const upload = multer({ dest: tmpdir(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 type Kind =
   | 'audio'

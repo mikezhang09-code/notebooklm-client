@@ -11,6 +11,14 @@ export interface WithClientOptions {
   session: NotebookRpcSession;
   /** Optional proxy URL. Defaults to env HTTPS_PROXY/ALL_PROXY if set. */
   proxy?: string;
+  /**
+   * Per-request read timeout (seconds) for the underlying HTTP transport.
+   * Honoured by the tls-client tier (Windows tier-2), which ships with a
+   * 60-second default inside the library — far too short for long chat
+   * answers. Overridable per-call, or globally via the
+   * `NOTEBOOKLM_CLIENT_TIMEOUT_SECONDS` env var. Default: 180.
+   */
+  timeoutSeconds?: number;
 }
 
 function resolveProxy(explicit?: string): string | undefined {
@@ -23,6 +31,27 @@ function resolveProxy(explicit?: string): string | undefined {
   );
 }
 
+/**
+ * Resolve the tls-client read timeout, in seconds.
+ *
+ * Precedence: explicit call-site value → env override → 180s default.
+ *
+ * The 180s floor was picked empirically: NotebookLM chat with 30-50
+ * sources and Chinese prompts routinely takes 60-120s to stream back a
+ * full answer. The library's own default of 60s was triggering
+ * `net/http: request canceled (Client.Timeout or context cancellation
+ * while reading body)` on realistic loads.
+ */
+function resolveTimeoutSeconds(explicit?: number): number {
+  if (typeof explicit === 'number' && explicit > 0) return explicit;
+  const raw = process.env['NOTEBOOKLM_CLIENT_TIMEOUT_SECONDS'];
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 180;
+}
+
 export async function withClient<T>(
   opts: WithClientOptions,
   fn: (client: NotebookClient) => Promise<T>,
@@ -32,6 +61,7 @@ export async function withClient<T>(
     transport: 'auto',
     session: opts.session,
     proxy: resolveProxy(opts.proxy),
+    timeoutSeconds: resolveTimeoutSeconds(opts.timeoutSeconds),
   });
   try {
     return await fn(client);

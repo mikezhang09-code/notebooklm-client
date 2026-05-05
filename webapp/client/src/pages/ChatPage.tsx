@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { apiGet, apiJson } from '../lib/api';
+import { saveChatToCorpus, type SaveChatResult } from '../lib/corpus';
 
 interface NotebookInfo {
   id: string;
@@ -37,6 +38,42 @@ export default function ChatPage() {
     { role: 'user' | 'assistant'; text: string; citations?: ChatWithCitationsResponse['citations'] }[]
   >([]);
 
+  // ── Save-to-corpus state ────────────────────────────────────────────
+  // sessionId is minted lazily on first save and reused for subsequent
+  // saves of the same thread, so re-saves UPDATE the existing artifact
+  // instead of creating duplicates. It is reset whenever the notebook
+  // changes (i.e. the user starts a fresh conversation).
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [saveTitle, setSaveTitle] = useState('');
+  const [titleEdited, setTitleEdited] = useState(false);
+  const [savingChat, setSavingChat] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [saveResult, setSaveResult] = useState<SaveChatResult | null>(null);
+
+  // Suggest a default title from notebook title + first user question.
+  // Recomputes as the conversation grows, but only "wins" while the user
+  // hasn't manually edited the title input — preserves user intent across
+  // turn additions.
+  const suggestedTitle = useMemo(() => {
+    const nbTitle = detail?.title?.trim() || 'Chat';
+    const firstQ = history.find((h) => h.role === 'user')?.text?.trim() ?? '';
+    if (!firstQ) return nbTitle;
+    const trimmed = firstQ.length > 80 ? firstQ.slice(0, 77) + '…' : firstQ;
+    return `${nbTitle} — ${trimmed}`;
+  }, [detail?.title, history]);
+
+  useEffect(() => {
+    if (!titleEdited) setSaveTitle(suggestedTitle);
+  }, [suggestedTitle, titleEdited]);
+
+  // Once the conversation grows past a previous save, the "Saved · N
+  // chunks" banner refers to a stale snapshot. Clear it so the user
+  // isn't misled — the sessionId is preserved so the next click still
+  // does an UPDATE.
+  useEffect(() => {
+    setSaveResult(null);
+  }, [history.length]);
+
   useEffect(() => {
     void (async () => {
       try {
@@ -64,6 +101,56 @@ export default function ChatPage() {
       }
     })();
   }, [selectedId]);
+
+  /**
+   * Persist the current conversation as a `kind='qa'` corpus artifact.
+   * On first call we mint a sessionId; subsequent calls reuse it so the
+   * server can update-in-place rather than create duplicates.
+   */
+  async function handleSaveChat() {
+    if (!selectedId || history.length === 0) return;
+    const title = saveTitle.trim();
+    if (!title) {
+      setSaveErr('Title is required');
+      return;
+    }
+    // Need at least one assistant turn — otherwise we'd be saving a
+    // question with no answer, which isn't useful for retrieval.
+    if (!history.some((h) => h.role === 'assistant')) {
+      setSaveErr('Send at least one question and wait for the answer first');
+      return;
+    }
+
+    setSavingChat(true);
+    setSaveErr(null);
+    try {
+      // Lazy mint — keeps state clean until the user actually saves.
+      let sid = sessionId;
+      if (!sid) {
+        sid =
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        setSessionId(sid);
+      }
+      const result = await saveChatToCorpus({
+        notebookId: selectedId,
+        notebookTitle: detail?.title ?? '',
+        sessionId: sid,
+        title,
+        turns: history.map((h) => ({
+          role: h.role,
+          content: h.text,
+          citations: h.citations,
+        })),
+      });
+      setSaveResult(result);
+    } catch (e) {
+      setSaveErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingChat(false);
+    }
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -115,6 +202,13 @@ export default function ChatPage() {
             onChange={(e) => {
               setSelectedId(e.target.value);
               setHistory([]);
+              // New notebook → new conversation. Drop the prior session
+              // identity so the next save creates a fresh artifact rather
+              // than overwriting the previous one.
+              setSessionId(null);
+              setSaveResult(null);
+              setSaveErr(null);
+              setTitleEdited(false);
             }}
           >
             <option value="">— select —</option>
@@ -164,6 +258,63 @@ export default function ChatPage() {
 
       {history.length > 0 && (
         <div className="card space-y-3">
+          {/*
+            Save-conversation toolbar. Idempotent on sessionId — clicking
+            Save a second time updates the existing artifact instead of
+            creating a duplicate, so the user can save mid-conversation
+            and again at the end without ending up with two rows.
+          */}
+          <div className="space-y-2 border-b border-slate-200 pb-3">
+            <div className="flex items-center gap-2">
+              <input
+                className="input flex-1 text-sm"
+                placeholder="Title for saved conversation"
+                value={saveTitle}
+                onChange={(e) => {
+                  setSaveTitle(e.target.value);
+                  setTitleEdited(true);
+                }}
+                disabled={savingChat}
+              />
+              <button
+                type="button"
+                className="btn-primary whitespace-nowrap"
+                onClick={() => void handleSaveChat()}
+                disabled={
+                  savingChat ||
+                  !saveTitle.trim() ||
+                  !history.some((h) => h.role === 'assistant')
+                }
+                title={
+                  sessionId
+                    ? 'Update the saved conversation in your corpus'
+                    : 'Save this conversation to your corpus'
+                }
+              >
+                {savingChat
+                  ? 'Saving…'
+                  : sessionId
+                  ? 'Update saved'
+                  : 'Save to corpus'}
+              </button>
+            </div>
+            {saveErr && (
+              <div className="text-xs text-rose-700">Save failed: {saveErr}</div>
+            )}
+            {saveResult && !saveErr && (
+              <div className="text-xs text-emerald-700">
+                {saveResult.created ? 'Saved' : 'Updated'} ·{' '}
+                {saveResult.chunkCount} chunk
+                {saveResult.chunkCount === 1 ? '' : 's'} ·{' '}
+                <Link
+                  to="/corpus/library"
+                  className="underline hover:text-emerald-800"
+                >
+                  View in Library
+                </Link>
+              </div>
+            )}
+          </div>
           {history.map((msg, i) => (
             <div key={i}>
               <div className="text-xs font-semibold uppercase text-slate-400">

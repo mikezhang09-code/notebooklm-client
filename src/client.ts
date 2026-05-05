@@ -93,6 +93,14 @@ export interface ConnectOptions extends BrowserLaunchOptions {
   curlBinaryPath?: string;
   /** tls-client profile identifier. Default: 'chrome_131'. */
   tlsClientProfile?: string;
+  /**
+   * Per-request read timeout (seconds) for the underlying HTTP transport.
+   * Currently only honoured by the `tls-client` tier — other tiers use
+   * their own defaults. Raise this when you expect long responses
+   * (NotebookLM chat over many sources routinely takes 60-120s).
+   * Default: 60.
+   */
+  timeoutSeconds?: number;
 }
 
 /** Result of {@link NotebookClient.downloadArtifact}. */
@@ -204,6 +212,7 @@ export class NotebookClient {
       session,
       curlBinaryPath: config.curlBinaryPath,
       tlsClientProfile: config.tlsClientProfile,
+      timeoutSeconds: config.timeoutSeconds,
       proxy: config.proxy,
       onSessionExpired,
     });
