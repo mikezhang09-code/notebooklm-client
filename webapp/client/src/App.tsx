@@ -11,6 +11,8 @@ import AnalyzePage from './pages/AnalyzePage';
 import ChatPage from './pages/ChatPage';
 import DiagnosePage from './pages/DiagnosePage';
 import CorpusPage from './pages/CorpusPage';
+import CorpusUploadPage from './pages/CorpusUploadPage';
+import CorpusLibraryPage from './pages/CorpusLibraryPage';
 
 interface NavItem {
   to: string;
@@ -76,7 +78,12 @@ export default function App() {
   }
 
   const navItems = corpusEnabled
-    ? [...NAV, { to: '/corpus', label: 'Corpus search', group: 'Research' }]
+    ? [
+        ...NAV,
+        { to: '/corpus', label: 'Search', group: 'Research' },
+        { to: '/corpus/library', label: 'Library', group: 'Research' },
+        { to: '/corpus/upload', label: 'Upload', group: 'Research' },
+      ]
     : NAV;
   const groups = groupBy(navItems);
 
@@ -157,7 +164,13 @@ export default function App() {
             <Route path="/chat/:id" element={<ChatPage />} />
             <Route path="/session" element={<SessionPage />} />
             <Route path="/diagnose" element={<DiagnosePage />} />
-            {corpusEnabled && <Route path="/corpus" element={<CorpusPage />} />}
+            {corpusEnabled && (
+              <>
+                <Route path="/corpus" element={<CorpusPage />} />
+                <Route path="/corpus/library" element={<CorpusLibraryPage />} />
+                <Route path="/corpus/upload" element={<CorpusUploadPage />} />
+              </>
+            )}
             <Route path="*" element={<Navigate to="/library" replace />} />
           </Routes>
         </main>

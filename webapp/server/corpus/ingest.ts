@@ -56,6 +56,41 @@ export interface IngestResult {
   textPreview: string;
   /** Size of the raw blob uploaded, in bytes. */
   sizeBytes: number;
+  /**
+   * True iff this artifact was already in the corpus and we returned
+   * the existing row without re-uploading / re-embedding.
+   */
+  alreadyIngested?: boolean;
+}
+
+/**
+ * Look up an existing artifact by (notebook_id, artifact_id). Returns null
+ * if there isn't one. Used for idempotent ingest — avoids a re-upload +
+ * re-embed when a NotebookLM artifact is downloaded twice.
+ */
+async function findExistingByArtifactPair(
+  cfg: CorpusConfig,
+  notebookId: string,
+  artifactId: string,
+): Promise<{ id: string; objectName: string; chunkCount: number } | null> {
+  return withConnection(cfg, async (conn) => {
+    const r = await conn.execute<{
+      ID: string;
+      OBJECT_NAME: string;
+      CNT: number;
+    }>(
+      `SELECT a.id AS id, a.object_name AS object_name,
+              (SELECT COUNT(*) FROM artifact_chunks c WHERE c.artifact_id = a.id) AS cnt
+         FROM artifacts a
+        WHERE a.notebook_id = :nb AND a.artifact_id = :aid
+        FETCH FIRST 1 ROWS ONLY`,
+      { nb: notebookId, aid: artifactId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    const row = r.rows?.[0];
+    if (!row) return null;
+    return { id: row.ID, objectName: row.OBJECT_NAME, chunkCount: Number(row.CNT) };
+  });
 }
 
 /**
@@ -112,6 +147,28 @@ export async function ingestArtifactWith(
   cfg: CorpusConfig,
   input: IngestInput,
 ): Promise<IngestResult> {
+  // 0) Idempotency: if this is a NotebookLM artifact with a (notebook, artifact)
+  //    pair and we already have a matching row, short-circuit and reuse it.
+  //    This makes the download-triggered auto-ingest safe to call repeatedly.
+  if (input.origin === 'notebooklm' && input.notebookId && input.artifactId) {
+    const existing = await findExistingByArtifactPair(
+      cfg,
+      input.notebookId,
+      input.artifactId,
+    );
+    if (existing) {
+      return {
+        id: existing.id,
+        objectName: existing.objectName,
+        bucket: cfg.ociBucket,
+        chunkCount: existing.chunkCount,
+        textPreview: '',
+        sizeBytes: input.buffer.length,
+        alreadyIngested: true,
+      };
+    }
+  }
+
   const id = newId();
   const ext = mimeToExt(input.mimeType);
   const fileSafe = safeName(input.filename, ext);
@@ -148,7 +205,12 @@ export async function ingestArtifactWith(
   }
 
   // 3) DB transaction: artifact + chunks.
-  await withConnection(cfg, async (conn) => {
+  //    If two concurrent callers both passed idempotency check and then
+  //    race to INSERT, the unique index on (notebook_id, artifact_id)
+  //    will throw ORA-00001 on one of them. We catch that one case,
+  //    re-read the winning row, and return it.
+  try {
+    await withConnection(cfg, async (conn) => {
     await conn.execute(
       `INSERT INTO artifacts
          (id, kind, origin, title, notebook_id, artifact_id,
@@ -209,7 +271,37 @@ export async function ingestArtifactWith(
     }
 
     await conn.commit();
-  });
+    });
+  } catch (err) {
+    // ORA-00001 = unique constraint violation. With our partial unique
+    // index, this only happens on a (notebook_id, artifact_id) collision
+    // from a concurrent ingest — treat it as a successful "already there".
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      /ORA-00001/i.test(msg) &&
+      input.origin === 'notebooklm' &&
+      input.notebookId &&
+      input.artifactId
+    ) {
+      const winner = await findExistingByArtifactPair(
+        cfg,
+        input.notebookId,
+        input.artifactId,
+      );
+      if (winner) {
+        return {
+          id: winner.id,
+          objectName: winner.objectName,
+          bucket: cfg.ociBucket,
+          chunkCount: winner.chunkCount,
+          textPreview: rawText.slice(0, 200),
+          sizeBytes: input.buffer.length,
+          alreadyIngested: true,
+        };
+      }
+    }
+    throw err;
+  }
 
   return {
     id,

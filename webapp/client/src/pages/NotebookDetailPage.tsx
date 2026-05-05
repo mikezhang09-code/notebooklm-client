@@ -23,12 +23,19 @@ interface DetailResponse {
   artifacts?: ArtifactInfo[];
 }
 
+type CorpusAutoIngestStatus =
+  | 'scheduled'
+  | 'disabled'
+  | 'skipped_kind'
+  | 'no_file';
+
 interface DownloadResponse {
   jobId: string;
   type: number;
   typeLabel: string;
   files: Array<{ name: string; url: string }>;
   streamUrl?: string;
+  corpus?: { status: CorpusAutoIngestStatus };
 }
 
 const MIND_MAP_TYPE = 5;
@@ -79,9 +86,15 @@ export default function NotebookDetailPage() {
       return next;
     });
     try {
+      // Pass titles so the corpus entry gets a human-readable name
+      // (notebook title + artifact title) rather than a filename-derived one.
+      const artifact = detail?.artifacts?.find((x) => x.id === artifactId);
       const result = await apiJson<DownloadResponse>(
         `/api/notebooks/${id}/artifacts/${artifactId}/download`,
-        {},
+        {
+          notebookTitle: detail?.title,
+          artifactTitle: artifact?.title,
+        },
       );
       setDownloadResult((d) => ({ ...d, [artifactId]: result }));
       // Auto-trigger the first file download for one-click feel.
@@ -300,6 +313,9 @@ export default function NotebookDetailPage() {
                       {dlError}
                     </div>
                   )}
+                  {dlResult?.corpus && (
+                    <CorpusBadge status={dlResult.corpus.status} />
+                  )}
                   {dlResult && (dlResult.files.length > 1 || dlResult.streamUrl) && (
                     <div className="mt-2 space-y-1 text-sm">
                       {dlResult.files.map((f) => (
@@ -334,4 +350,35 @@ export default function NotebookDetailPage() {
       )}
     </div>
   );
+}
+
+function CorpusBadge({ status }: { status: CorpusAutoIngestStatus }): JSX.Element | null {
+  // Small signal to the user that the download was (or wasn't) indexed
+  // in the research corpus. The actual embed completes async on the
+  // server; 'scheduled' means the server accepted the job, not that
+  // it has already finished.
+  switch (status) {
+    case 'scheduled':
+      return (
+        <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+          <span aria-hidden>✓</span> Saved to research corpus
+        </span>
+      );
+    case 'disabled':
+      return null;
+    case 'skipped_kind':
+      return (
+        <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+          Not indexed (mind-map / non-file artifact)
+        </span>
+      );
+    case 'no_file':
+      return (
+        <span className="mt-2 inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+          Not indexed (no downloadable file)
+        </span>
+      );
+    default:
+      return null;
+  }
 }

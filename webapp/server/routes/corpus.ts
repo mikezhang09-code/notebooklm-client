@@ -176,20 +176,23 @@ corpusRouter.get(
     const offset = Math.max(parseInt(q['offset'] ?? '0', 10) || 0, 0);
 
     const whereClauses: string[] = [];
-    const binds: Record<string, string | number> = { lim: limit, off: offset };
+    // Keep filter binds separate from pagination binds — oracledb Thin
+    // rejects "extra" bind parameters that a query doesn't reference.
+    const filterBinds: Record<string, string | number> = {};
     if (q['kind']) {
       whereClauses.push('kind = :kind');
-      binds['kind'] = q['kind'];
+      filterBinds['kind'] = q['kind'];
     }
     if (q['origin']) {
       whereClauses.push('origin = :origin');
-      binds['origin'] = q['origin'];
+      filterBinds['origin'] = q['origin'];
     }
     if (q['notebookId']) {
       whereClauses.push('notebook_id = :nb');
-      binds['nb'] = q['notebookId'];
+      filterBinds['nb'] = q['notebookId'];
     }
     const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const listBinds = { ...filterBinds, lim: limit, off: offset };
 
     const { items, total } = await withConnection(cfg, async (conn) => {
       const listSql = `
@@ -203,12 +206,12 @@ corpusRouter.get(
           OFFSET :off ROWS FETCH NEXT :lim ROWS ONLY`;
       // OUT_FORMAT_OBJECT keeps column names as uppercase keys so the
       // client sees `ID`, `KIND`, `OBJECT_NAME`, ... instead of tuples.
-      const listResult = await conn.execute<Record<string, unknown>>(listSql, binds, {
+      const listResult = await conn.execute<Record<string, unknown>>(listSql, listBinds, {
         outFormat: oracledb.OUT_FORMAT_OBJECT,
       });
       const countResult = await conn.execute<{ CNT: number }>(
         `SELECT COUNT(*) AS cnt FROM artifacts a ${where}`,
-        binds,
+        filterBinds,
         { outFormat: oracledb.OUT_FORMAT_OBJECT },
       );
       return {

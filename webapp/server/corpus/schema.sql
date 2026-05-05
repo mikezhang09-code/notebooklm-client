@@ -48,6 +48,31 @@ BEGIN
 END;
 /
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 1b) Dedup: partial-like unique index on (notebook_id, artifact_id).
+--
+--     We only want NotebookLM artifacts to be unique per (notebook, artifact)
+--     pair; uploads (both columns NULL) must be free to repeat. Oracle has
+--     no partial-index syntax, so we fake it with function-based columns
+--     that evaluate to NULL unless BOTH source columns are non-NULL. A row
+--     where any key column is NULL is not indexed (Oracle's standard rule
+--     for function-based unique indexes), so uploads are untouched.
+-- ─────────────────────────────────────────────────────────────────────────────
+DECLARE
+  e_already_exists EXCEPTION;
+  PRAGMA EXCEPTION_INIT(e_already_exists, -955);
+  PRAGMA EXCEPTION_INIT(e_already_exists, -1408);
+BEGIN
+  EXECUTE IMMEDIATE q'[
+    CREATE UNIQUE INDEX ix_artifacts_nb_aid_unique ON artifacts(
+      CASE WHEN notebook_id IS NOT NULL AND artifact_id IS NOT NULL THEN notebook_id END,
+      CASE WHEN notebook_id IS NOT NULL AND artifact_id IS NOT NULL THEN artifact_id END
+    )
+  ]';
+EXCEPTION WHEN e_already_exists THEN NULL;
+END;
+/
+
 -- Oracle Text full-text index on title for cheap title search alongside vector search.
 -- Wrapped in a block so re-runs don't fail.
 DECLARE
