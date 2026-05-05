@@ -146,22 +146,40 @@ async function loadArtifact(
 // ─── Public API ──────────────────────────────────────────────────────────
 
 /**
+ * Outcome of an enqueue attempt, so callers (backfill CLI, retry route)
+ * can report honestly without re-querying the row. `transcribing` means
+ * the job is live at OCI Speech; `failed` means submit errored and the
+ * error is already persisted to the row's `transcription_error` column;
+ * `skipped` means we deliberately did nothing (wrong kind, speech off);
+ * `already_done` / `already_running` are no-op idempotency short-circuits.
+ */
+export type EnqueueOutcome =
+  | { status: 'transcribing'; jobOcid: string }
+  | { status: 'failed'; error: string }
+  | { status: 'skipped'; reason: string }
+  | { status: 'already_done' }
+  | { status: 'already_running'; jobOcid: string };
+
+/**
  * Called by ingest.ts right after a successful insert of an audio/video
  * artifact. Submits the OCI Speech job and flips the row to 'transcribing'.
  *
  * Idempotent: if the row is already transcribing/done, this is a no-op.
- * On any submit failure, the row is marked 'failed' with the error message.
+ * On any submit failure, the row is marked 'failed' with the error message
+ * *and* the error is returned in the outcome (never thrown) — ingest.ts
+ * relies on this to prevent transcription errors from failing the parent
+ * commit.
  */
 export async function enqueueTranscription(
   cfg: CorpusConfig,
   artifactId: string,
-): Promise<void> {
+): Promise<EnqueueOutcome> {
   if (!cfg.speechEnabled) {
     await updateTranscriptionStatus(cfg, artifactId, {
       status: 'skipped',
       error: 'OCI_SPEECH_ENABLED=false',
     });
-    return;
+    return { status: 'skipped', reason: 'OCI_SPEECH_ENABLED=false' };
   }
 
   const art = await loadArtifact(cfg, artifactId);
@@ -170,24 +188,33 @@ export async function enqueueTranscription(
   }
 
   if (!AUDIO_VIDEO_KINDS.has(art.kind)) {
+    const reason = `kind "${art.kind}" not transcribable`;
     await updateTranscriptionStatus(cfg, artifactId, {
       status: 'skipped',
-      error: `kind "${art.kind}" not transcribable`,
+      error: reason,
     });
-    return;
+    return { status: 'skipped', reason };
   }
 
-  if (art.transcriptionStatus === 'done') return;
+  if (art.transcriptionStatus === 'done') {
+    return { status: 'already_done' };
+  }
   if (art.transcriptionStatus === 'transcribing' && art.transcriptionJobOcid) {
     // Already in flight — let the poller handle it.
-    return;
+    return {
+      status: 'already_running',
+      jobOcid: art.transcriptionJobOcid,
+    };
   }
 
   try {
     const { jobOcid } = await submitTranscriptionJob(cfg, {
       bucket: art.bucket,
       objectName: art.objectName,
-      displayName: `nblm/${art.id}`,
+      // OCI Speech displayName only accepts [a-zA-Z0-9_-]. We use a
+      // stable `nblm-<id>` prefix; the sanitiser in speech.ts is a
+      // belt-and-braces check in case callers pass anything richer.
+      displayName: `nblm-${art.id}`,
     });
     await updateTranscriptionStatus(cfg, artifactId, {
       status: 'transcribing',
@@ -197,6 +224,7 @@ export async function enqueueTranscription(
     console.log(
       `[transcribe] submitted artifact=${artifactId} job=${jobOcid.slice(-12)}`,
     );
+    return { status: 'transcribing', jobOcid };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[transcribe] submit failed for ${artifactId}: ${msg}`);
@@ -205,24 +233,26 @@ export async function enqueueTranscription(
       error: msg,
       clearJob: true,
     });
+    return { status: 'failed', error: msg };
   }
 }
 
 /**
  * Reset a failed/skipped/null row and re-submit the job. Used by the
- * "Retry" button in the Library UI.
+ * "Retry" button in the Library UI and by the --include-failed path of
+ * the backfill CLI.
  */
 export async function retryTranscription(
   cfg: CorpusConfig,
   artifactId: string,
-): Promise<void> {
+): Promise<EnqueueOutcome> {
   // Wipe previous status so enqueue takes the submit path.
   await updateTranscriptionStatus(cfg, artifactId, {
     status: 'pending',
     clearJob: true,
     error: null,
   });
-  await enqueueTranscription(cfg, artifactId);
+  return enqueueTranscription(cfg, artifactId);
 }
 
 // ─── Finalise (SUCCEEDED jobs) ───────────────────────────────────────────

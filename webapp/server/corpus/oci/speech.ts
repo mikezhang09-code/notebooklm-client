@@ -85,6 +85,23 @@ export interface SubmitOptions {
 }
 
 /**
+ * OCI Speech restricts `displayName` to `[a-zA-Z0-9_-]`. Callers often
+ * hand us artifact titles (which may contain Chinese, colons, spaces,
+ * slashes, etc.) or object paths (which contain `/`). This helper maps
+ * any disallowed character to `-`, collapses runs of `-`, trims leading
+ * and trailing `-`, caps at 255 chars, and falls back to a safe default
+ * if the result is empty.
+ */
+export function sanitiseDisplayName(raw: string): string {
+  const cleaned = raw
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 255);
+  return cleaned.length > 0 ? cleaned : 'nblm-job';
+}
+
+/**
  * Submit a new transcription job. Returns the job OCID and the object
  * name where the JSON output will eventually land (deterministic —
  * `<speechOutputPrefix><objectName>.json`).
@@ -96,13 +113,14 @@ export async function submitTranscriptionJob(
   const client = await getSpeechClient(cfg);
   const language = opts.language ?? cfg.speechLanguage;
 
-  const displayName =
-    opts.displayName ?? `nblm-${opts.objectName.slice(-40)}`;
+  const displayName = sanitiseDisplayName(
+    opts.displayName ?? `nblm-${opts.objectName.slice(-40)}`,
+  );
 
   const createRequest = {
     createTranscriptionJobDetails: {
       compartmentId: cfg.ociCompartmentId,
-      displayName: displayName.slice(0, 255),
+      displayName,
       description: 'notebooklm-webapp corpus transcription',
       modelDetails: {
         // Whisper is locale-agnostic and covers zh/ja/ko/en/etc.

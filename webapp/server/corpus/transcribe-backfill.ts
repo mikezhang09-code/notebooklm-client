@@ -18,7 +18,11 @@
 import oracledb from 'oracledb';
 import { getCorpusConfig } from './config.js';
 import { withConnection } from './oci/db.js';
-import { enqueueTranscription } from './transcribe.js';
+import {
+  enqueueTranscription,
+  retryTranscription,
+  type EnqueueOutcome,
+} from './transcribe.js';
 
 interface BackfillRow {
   ID: string;
@@ -83,21 +87,56 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n[backfill] submitting ${rows.length} job(s)…`);
-  let ok = 0;
-  let fail = 0;
+  let submitted = 0;
+  let failed = 0;
+  let skipped = 0;
   for (const r of rows) {
+    let outcome: EnqueueOutcome;
     try {
-      await enqueueTranscription(cfg, r.ID);
-      ok += 1;
-      console.log(`  ✓ ${r.ID}`);
+      // 'failed' rows must go through retryTranscription — enqueue
+      // short-circuits on any non-null, non-'pending' status to stay
+      // idempotent. For null / 'skipped' / 'pending' rows the plain
+      // enqueue path is enough.
+      outcome =
+        r.TRANSCRIPTION_STATUS === 'failed'
+          ? await retryTranscription(cfg, r.ID)
+          : await enqueueTranscription(cfg, r.ID);
     } catch (err) {
-      fail += 1;
+      failed += 1;
       console.warn(
         `  ✗ ${r.ID} — ${err instanceof Error ? err.message : String(err)}`,
       );
+      continue;
+    }
+
+    switch (outcome.status) {
+      case 'transcribing':
+        submitted += 1;
+        console.log(`  ✓ ${r.ID}  job=…${outcome.jobOcid.slice(-12)}`);
+        break;
+      case 'already_running':
+        skipped += 1;
+        console.log(
+          `  ↻ ${r.ID}  already running (job=…${outcome.jobOcid.slice(-12)})`,
+        );
+        break;
+      case 'already_done':
+        skipped += 1;
+        console.log(`  · ${r.ID}  already done`);
+        break;
+      case 'skipped':
+        skipped += 1;
+        console.log(`  · ${r.ID}  skipped (${outcome.reason})`);
+        break;
+      case 'failed':
+        failed += 1;
+        console.warn(`  ✗ ${r.ID}  ${outcome.error}`);
+        break;
     }
   }
-  console.log(`\n[backfill] done. submitted=${ok} failed=${fail}`);
+  console.log(
+    `\n[backfill] done. submitted=${submitted} failed=${failed} skipped=${skipped}`,
+  );
   console.log(
     `[backfill] watch status with: curl ${process.env['PORT'] ? `http://localhost:${process.env['PORT']}` : 'http://localhost:7860'}/api/corpus/artifacts?kind=audio | jq '.items[] | {id:.ID, trx:.TRANSCRIPTION_STATUS}'`,
   );
