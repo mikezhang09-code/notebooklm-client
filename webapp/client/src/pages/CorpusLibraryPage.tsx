@@ -1049,7 +1049,7 @@ function ArtifactViewer({
           )}
           {result.type === 'html' && result.content && (
             <div
-              className="h-full overflow-y-auto p-6 text-sm text-slate-800 [&_h1]:mb-2 [&_h1]:text-xl [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:font-medium [&_li]:ml-4 [&_ol]:mb-3 [&_ol]:list-decimal [&_p]:mb-3 [&_table]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-300 [&_td]:p-1 [&_th]:border [&_th]:border-slate-300 [&_th]:bg-slate-50 [&_th]:p-1 [&_ul]:mb-3 [&_ul]:list-disc"
+              className="h-full overflow-y-auto p-6 text-sm text-slate-800 [&_h1]:mb-2 [&_h1]:text-xl [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:font-medium [&_li]:ml-4 [&_ol]:mb-3 [&_ol]:list-decimal [&_p]:mb-3 [&_table]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_th]:font-semibold [&_th]:text-left [&_ul]:mb-3 [&_ul]:list-disc"
               dangerouslySetInnerHTML={{ __html: result.content }}
             />
           )}

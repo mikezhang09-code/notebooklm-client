@@ -375,18 +375,72 @@ function csvToHtml(csv: string): string | null {
   return rows.length >= 2 ? renderHtmlTable(rows) : null;
 }
 
+/** Recursively find the first string value in a nested array structure. */
+function extractFirstString(val: unknown): string | null {
+  if (typeof val === 'string') return val;
+  if (!Array.isArray(val)) return null;
+  for (const item of val) {
+    const result = extractFirstString(item);
+    if (result !== null) return result;
+  }
+  return null;
+}
+
+/**
+ * Parse the NotebookLM data_table JSON format.
+ *
+ * Structure:
+ *   parsed[0][0][0][0] = tableNode  →  [startPos, endPos, null, null, [type, ?, rowsArray]]
+ *   tableNode[4][2]    = rowsArray  →  array of rows, each [start, end, cellsArray]
+ *   each cell          = deeply nested array whose leaf string is the cell text
+ *   parsed[0][0][0][1] = footnoteNode (optional)
+ */
+function parseNotebookLMDataTable(parsed: unknown): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sections: unknown = (parsed as any)[0]?.[0]?.[0];
+    if (!Array.isArray(sections) || sections.length === 0) return null;
+
+    const tableNode: unknown = sections[0];
+    if (!Array.isArray(tableNode)) return null;
+
+    const tableStruct: unknown = tableNode[4];
+    if (!Array.isArray(tableStruct) || tableStruct.length < 3) return null;
+
+    const rowsArray: unknown = tableStruct[2];
+    if (!Array.isArray(rowsArray) || rowsArray.length === 0) return null;
+
+    const rows: string[][] = [];
+    for (const row of rowsArray) {
+      if (!Array.isArray(row) || row.length < 3) continue;
+      const cellsArray: unknown = row[2];
+      if (!Array.isArray(cellsArray)) continue;
+      const cells = cellsArray.map((cell: unknown) => extractFirstString(cell) ?? '');
+      if (cells.length > 0) rows.push(cells);
+    }
+    if (rows.length === 0) return null;
+
+    let html = renderHtmlTable(rows);
+
+    // Append footnotes if present (sibling of tableNode)
+    if (sections.length > 1) {
+      const footnoteText = extractFirstString(sections[1]);
+      if (footnoteText) {
+        html += `<p class="footnote" style="margin-top:0.5rem;font-size:0.75rem;color:#64748b">${_esc(footnoteText)}</p>`;
+      }
+    }
+
+    return html;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Try to render a parsed JSON value as an HTML table using multiple strategies:
  *
- * 1. NotebookLM meta[18] dump: [[dataNode], [prompt, lang]]
- *    Walk section[0] only (skips the [prompt, lang] echo in section[1]).
- *    Walker is intentionally wider than the library's extractTableRows:
- *    · accepts cells that are booleans or plain objects (stringified)
- *    · accepts single-cell rows (length >= 1 instead of > 1)
- *    This catches tables the strict library walker missed.
- *
+ * 1. NotebookLM data_table format: deeply nested row/cell structure.
  * 2. Plain arrays-of-arrays at the top level.
- *
  * 3. Array-of-objects [{col: val, …}, …] — keys become the header row.
  *
  * Returns an HTML <table> string or null when no table structure is detected.
@@ -398,31 +452,27 @@ function anyJsonToHtml(parsed: unknown): string | null {
     return String(v);
   };
 
-  // Recursive walker: collect arrays whose every element is a non-array value.
-  function findRows(data: unknown): string[][] {
-    const rows: string[][] = [];
-    function walk(val: unknown): void {
-      if (!Array.isArray(val)) return;
-      if (val.length >= 1 && val.every((c) => !Array.isArray(c))) {
-        rows.push(val.map(toStr));
-        return;
-      }
-      for (const item of val) walk(item);
-    }
-    walk(data);
-    return rows;
-  }
+  // Strategy 1: NotebookLM data_table specific format.
+  const nbResult = parseNotebookLMDataTable(parsed);
+  if (nbResult) return nbResult;
 
   if (Array.isArray(parsed)) {
-    // Strategy 1: notebooklm section[0] is the data node.
-    if (Array.isArray(parsed[0])) {
-      const rows = findRows(parsed[0]);
-      if (rows.length > 0) return renderHtmlTable(rows);
+    // Strategy 2: plain arrays-of-arrays — collect leaf rows recursively.
+    function findRows(data: unknown): string[][] {
+      const rows: string[][] = [];
+      function walk(val: unknown): void {
+        if (!Array.isArray(val)) return;
+        if (val.length >= 1 && val.every((c) => !Array.isArray(c))) {
+          rows.push(val.map(toStr));
+          return;
+        }
+        for (const item of val) walk(item);
+      }
+      walk(data);
+      return rows;
     }
-
-    // Strategy 2: treat the top-level array as-is (arrays-of-arrays).
     const rows = findRows(parsed);
-    if (rows.length > 0) return renderHtmlTable(rows);
+    if (rows.length > 1) return renderHtmlTable(rows);
 
     // Strategy 3: array-of-objects [{col: val, …}, …]
     if (
