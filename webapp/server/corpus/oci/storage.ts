@@ -61,6 +61,29 @@ export async function putObject(
 }
 
 /**
+ * Fetch an object from Object Storage and return its full contents as a
+ * Buffer. Intended for server-side document conversion (DOCX→HTML, etc.)
+ * where the server needs the raw bytes rather than a presigned URL.
+ */
+export async function getObjectBuffer(
+  cfg: CorpusConfig,
+  objectName: string,
+): Promise<Buffer> {
+  const client = await getStorageClient(cfg);
+  const resp = await client.getObject({
+    namespaceName: cfg.ociNamespace,
+    bucketName: cfg.ociBucket,
+    objectName,
+  });
+  if (!resp.value) throw new Error('Empty body from OCI Object Storage');
+  const chunks: Buffer[] = [];
+  for await (const chunk of resp.value as AsyncIterable<Buffer | Uint8Array>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
  * Delete a single object from the bucket. Idempotent — a 404 from OCI
  * (object already gone) is treated as success so retries are safe.
  */

@@ -27,6 +27,7 @@
     "oci-generativeaiinference": "^2.131.0",
     "oci-objectstorage": "^2.131.0",
     "oracledb": "^6.10.0",
+    "marked": "^14.0.0",
     "pdf-parse": "^1.1.4",
     "ulid": "^2.4.0"
   },

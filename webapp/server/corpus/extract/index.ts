@@ -36,7 +36,10 @@ const BINARY_MIME_PREFIXES = [
   'application/x-tar',
   'application/gzip',
   'application/x-bzip',
-  'application/octet-stream',
+  // NOTE: application/octet-stream intentionally excluded. It means "type
+  // unknown" (Windows .md, .csv, etc. frequently upload as octet-stream).
+  // The BINARY_EXTENSIONS guard below catches truly-binary files regardless
+  // of their MIME type, so octet-stream falls through to extractText safely.
 ];
 
 const BINARY_EXTENSIONS = new Set([

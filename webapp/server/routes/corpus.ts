@@ -12,14 +12,20 @@
 
 import { Router } from 'express';
 import multer from 'multer';
+import { readFile } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import oracledb from 'oracledb';
+import mammoth from 'mammoth';
+import { marked } from 'marked';
 import { asyncHandler } from '../lib/handler.js';
+import { getJob } from '../lib/job-store.js';
 import {
   corpusHealth,
   getCorpusConfig,
   withConnection,
   createReadPar,
   deleteObject,
+  getObjectBuffer,
   searchCorpus,
   chatCorpus,
   type ChatTurn,
@@ -292,6 +298,300 @@ corpusRouter.get(
       downloadUrl,
       expiresAt: par.expiresAt.toISOString(),
     });
+  }),
+);
+
+// ── MIME inference helper for files where the stored mime_type is null ──
+function inferMimeType(objectName: string): string | null {
+  const ext = objectName.split('.').pop()?.toLowerCase();
+  const map: Record<string, string> = {
+    pdf: 'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ppt: 'application/vnd.ms-powerpoint',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+    md: 'text/markdown',
+    markdown: 'text/markdown',
+    txt: 'text/plain',
+    csv: 'text/csv',
+    json: 'application/json',
+  };
+  return ext ? (map[ext] ?? null) : null;
+}
+
+// ── Table viewer helpers (JSON + CSV) ────────────────────────────────────────
+
+function _esc(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function renderHtmlTable(rows: string[][]): string {
+  const [header, ...body] = rows;
+  if (!header || header.length === 0) return '';
+  const thead = `<thead><tr>${header.map((h) => `<th>${_esc(h)}</th>`).join('')}</tr></thead>`;
+  const tbody =
+    body.length > 0
+      ? `<tbody>${body
+          .map((row) => `<tr>${row.map((cell) => `<td>${_esc(cell)}</td>`).join('')}</tr>`)
+          .join('')}</tbody>`
+      : '';
+  return `<table>${thead}${tbody}</table>`;
+}
+
+/**
+ * Parse a CSV string (RFC-4180 quoting) into an HTML table.
+ * Returns null when the CSV has fewer than 2 rows or is unparseable.
+ */
+function csvToHtml(csv: string): string | null {
+  const lines = csv.trim().split('\n');
+  if (lines.length < 2) return null;
+
+  const parseRow = (line: string): string[] => {
+    const cells: string[] = [];
+    let inQuote = false;
+    let cell = '';
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]!;
+      if (ch === '"') {
+        if (inQuote && line[i + 1] === '"') { cell += '"'; i++; }
+        else inQuote = !inQuote;
+      } else if (ch === ',' && !inQuote) {
+        cells.push(cell);
+        cell = '';
+      } else {
+        cell += ch;
+      }
+    }
+    cells.push(cell);
+    return cells;
+  };
+
+  const rows = lines.map(parseRow);
+  return rows.length >= 2 ? renderHtmlTable(rows) : null;
+}
+
+/**
+ * Try to render a parsed JSON value as an HTML table using multiple strategies:
+ *
+ * 1. NotebookLM meta[18] dump: [[dataNode], [prompt, lang]]
+ *    Walk section[0] only (skips the [prompt, lang] echo in section[1]).
+ *    Walker is intentionally wider than the library's extractTableRows:
+ *    · accepts cells that are booleans or plain objects (stringified)
+ *    · accepts single-cell rows (length >= 1 instead of > 1)
+ *    This catches tables the strict library walker missed.
+ *
+ * 2. Plain arrays-of-arrays at the top level.
+ *
+ * 3. Array-of-objects [{col: val, …}, …] — keys become the header row.
+ *
+ * Returns an HTML <table> string or null when no table structure is detected.
+ */
+function anyJsonToHtml(parsed: unknown): string | null {
+  const toStr = (v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  };
+
+  // Recursive walker: collect arrays whose every element is a non-array value.
+  function findRows(data: unknown): string[][] {
+    const rows: string[][] = [];
+    function walk(val: unknown): void {
+      if (!Array.isArray(val)) return;
+      if (val.length >= 1 && val.every((c) => !Array.isArray(c))) {
+        rows.push(val.map(toStr));
+        return;
+      }
+      for (const item of val) walk(item);
+    }
+    walk(data);
+    return rows;
+  }
+
+  if (Array.isArray(parsed)) {
+    // Strategy 1: notebooklm section[0] is the data node.
+    if (Array.isArray(parsed[0])) {
+      const rows = findRows(parsed[0]);
+      if (rows.length > 0) return renderHtmlTable(rows);
+    }
+
+    // Strategy 2: treat the top-level array as-is (arrays-of-arrays).
+    const rows = findRows(parsed);
+    if (rows.length > 0) return renderHtmlTable(rows);
+
+    // Strategy 3: array-of-objects [{col: val, …}, …]
+    if (
+      parsed.length > 0 &&
+      typeof parsed[0] === 'object' &&
+      parsed[0] !== null &&
+      !Array.isArray(parsed[0])
+    ) {
+      const keys = [
+        ...new Set(
+          parsed.flatMap((item) =>
+            typeof item === 'object' && item !== null && !Array.isArray(item)
+              ? Object.keys(item as Record<string, unknown>)
+              : [],
+          ),
+        ),
+      ];
+      if (keys.length > 0) {
+        const dataRows = parsed.map((item) =>
+          keys.map((k) =>
+            toStr(
+              typeof item === 'object' && item !== null
+                ? (item as Record<string, unknown>)[k]
+                : undefined,
+            ),
+          ),
+        );
+        return renderHtmlTable([keys, ...dataRows]);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * GET /api/corpus/artifacts/:id/view
+ *
+ * Returns enough information for the client to render the artifact inline:
+ *
+ *   type="pdf"         → downloadUrl is a PAR; client embeds in <iframe>
+ *   type="office"      → officeViewerUrl is an MS Office Online embed URL
+ *   type="html"        → content is rendered HTML (DOCX via mammoth, MD via marked)
+ *   type="text"        → content is raw UTF-8 text
+ *   type="unsupported" → preview not available; downloadUrl always present as fallback
+ */
+corpusRouter.get(
+  '/artifacts/:id/view',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+
+    const row = await withConnection(cfg, async (conn) => {
+      const result = await conn.execute<Record<string, unknown>>(
+        `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+        { id },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      return result.rows?.[0];
+    });
+    if (!row) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+
+    const r = row as Record<string, unknown>;
+    const objectName = r['OBJECT_NAME'] as string;
+    // Normalise: strip charset / boundary params (e.g. "text/markdown; charset=utf-8" → "text/markdown").
+    const rawMimeFull = (r['MIME_TYPE'] as string | null) ?? null;
+    const rawMime = rawMimeFull ? rawMimeFull.split(';')[0]!.trim() : null;
+    // Treat application/octet-stream as "unknown" — browsers send this for file
+    // types they don't recognise (common for .md on Windows). Prefer the extension
+    // inferred from the object name, which always carries the original filename.
+    const mimeType =
+      !rawMime || rawMime === 'application/octet-stream'
+        ? (inferMimeType(objectName) ?? rawMime ?? null)
+        : rawMime;
+
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const par = await createReadPar(cfg, objectName, expiresAt);
+    const downloadUrl = /^https?:\/\//i.test(par.fullPath)
+      ? par.fullPath
+      : `https://objectstorage.${cfg.ociRegion}.oraclecloud.com${par.fullPath}`;
+    const base = {
+      downloadUrl,
+      expiresAt: par.expiresAt.toISOString(),
+      mimeType: mimeType ?? undefined,
+    };
+
+    if (mimeType === 'application/pdf' || mimeType === 'text/html') {
+      res.json({ type: 'pdf', ...base });
+      return;
+    }
+
+    if (
+      mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+      mimeType === 'application/vnd.ms-powerpoint' ||
+      mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      mimeType === 'application/vnd.ms-excel'
+    ) {
+      const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(downloadUrl)}`;
+      res.json({ type: 'office', officeViewerUrl, ...base });
+      return;
+    }
+
+    if (
+      mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ) {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const result = await mammoth.convertToHtml({ buffer });
+      res.json({ type: 'html', content: result.value, ...base });
+      return;
+    }
+
+    if (mimeType === 'text/markdown' || mimeType === 'text/x-markdown') {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = buffer.toString('utf8');
+      const html = String(await Promise.resolve(marked.parse(text)));
+      res.json({ type: 'html', content: html, ...base });
+      return;
+    }
+
+    if (mimeType === 'text/plain') {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = buffer.slice(0, 1024 * 1024).toString('utf8');
+      res.json({ type: 'text', content: text, ...base });
+      return;
+    }
+
+    if (mimeType === 'text/csv') {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = buffer.slice(0, 1024 * 1024).toString('utf8');
+      const tableHtml = csvToHtml(text);
+      if (tableHtml) {
+        res.json({ type: 'html', content: tableHtml, ...base });
+      } else {
+        res.json({ type: 'text', content: text, ...base });
+      }
+      return;
+    }
+
+    if (mimeType === 'application/json') {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = buffer.slice(0, 1024 * 1024).toString('utf8');
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+
+      if (parsed !== null) {
+        const tableHtml = anyJsonToHtml(parsed);
+        if (tableHtml) {
+          res.json({ type: 'html', content: tableHtml, ...base });
+        } else {
+          res.json({ type: 'text', content: JSON.stringify(parsed, null, 2), ...base });
+        }
+      } else {
+        res.json({ type: 'text', content: text, ...base });
+      }
+      return;
+    }
+
+    res.json({ type: 'unsupported', ...base });
   }),
 );
 
@@ -824,5 +1124,117 @@ corpusRouter.post(
       const msg = err instanceof Error ? err.message : 'save failed';
       res.status(500).json({ error: msg });
     }
+  }),
+);
+
+/**
+ * POST /api/corpus/save-from-job
+ *
+ * Save a generated artifact directly from a job temp directory into the
+ * corpus. Used by the "Save to library" button in the Generate section.
+ *
+ * Body (JSON):
+ *   jobId      string  (required)  job identifier from the generate response
+ *   filename   string  (required)  file name within the job directory
+ *   kind       string  (required)  generate kind (audio|report|quiz|flashcards|
+ *                                  infographic|slides|data-table)
+ *   title      string  (required)  display title for the artifact
+ *   notebookId string  (optional)  link to originating NotebookLM notebook
+ *
+ * Returns the same shape as POST /api/corpus/ingest (201).
+ */
+corpusRouter.post(
+  '/save-from-job',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const jobId = typeof body['jobId'] === 'string' ? body['jobId'].trim() : '';
+    const filename = typeof body['filename'] === 'string' ? body['filename'].trim() : '';
+    const kindRaw = typeof body['kind'] === 'string' ? body['kind'].trim() : '';
+    const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
+    const notebookId =
+      typeof body['notebookId'] === 'string' && body['notebookId'].trim().length > 0
+        ? body['notebookId'].trim()
+        : undefined;
+
+    if (!jobId) { res.status(400).json({ error: 'jobId is required' }); return; }
+    if (!filename) { res.status(400).json({ error: 'filename is required' }); return; }
+    if (!title || title.length === 0) { res.status(400).json({ error: 'title is required' }); return; }
+
+    const job = getJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: 'job not found or expired' });
+      return;
+    }
+
+    // Prevent path traversal.
+    const safeName = basename(filename);
+    const fullPath = resolve(join(job.dir, safeName));
+    if (!fullPath.startsWith(resolve(job.dir))) {
+      res.status(400).json({ error: 'invalid filename' });
+      return;
+    }
+
+    // Map generate kind (kebab-case) → corpus artifact kind (snake_case).
+    const KIND_MAP: Record<string, ArtifactKind> = {
+      audio: 'audio',
+      report: 'report',
+      video: 'video',
+      quiz: 'quiz',
+      flashcards: 'flashcards',
+      infographic: 'infographic',
+      slides: 'slides',
+      'data-table': 'data_table',
+    };
+    const kind: ArtifactKind = KIND_MAP[kindRaw] ?? 'upload';
+
+    // Determine MIME from extension so the ingest pipeline routes to the
+    // correct extractor and the artifact viewer picks the right renderer.
+    const ext = safeName.split('.').pop()?.toLowerCase() ?? '';
+    const MIME_BY_EXT: Record<string, string> = {
+      mp3: 'audio/mpeg',
+      mp4: 'video/mp4',
+      wav: 'audio/wav',
+      ogg: 'audio/ogg',
+      md: 'text/markdown; charset=utf-8',
+      html: 'text/html',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      pdf: 'application/pdf',
+      csv: 'text/csv',
+      json: 'application/json',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      txt: 'text/plain',
+    };
+    const mimeType = MIME_BY_EXT[ext] ?? 'application/octet-stream';
+
+    let buffer: Buffer;
+    try {
+      buffer = await readFile(fullPath);
+    } catch {
+      res.status(404).json({ error: 'file not found in job directory' });
+      return;
+    }
+
+    const result = await ingestArtifact({
+      buffer,
+      title,
+      kind,
+      origin: 'notebooklm',
+      mimeType,
+      filename: safeName,
+      notebookId,
+    });
+    res.status(201).json(result);
   }),
 );

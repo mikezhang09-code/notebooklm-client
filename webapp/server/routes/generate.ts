@@ -6,9 +6,9 @@
 
 import { Router } from 'express';
 import multer from 'multer';
-import { readdir, unlink } from 'node:fs/promises';
+import { readdir, rename, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename } from 'node:path';
+import { basename, extname } from 'node:path';
 import type { NotebookClient, SourceInput, WorkflowProgress } from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
@@ -191,9 +191,23 @@ generateRouter.post(
     const kind = req.params.kind as Kind;
     const stream = openSseStream(res);
 
-    let file: { path: string } | undefined;
+    let file: { path: string; originalname?: string } | undefined;
     try {
-      file = (req as unknown as { file?: { path: string } }).file;
+      file = (req as unknown as { file?: { path: string; originalname?: string } }).file;
+
+      // Multer strips the original extension from temp filenames (e.g. saves
+      // "report.md" as "/tmp/abc123"). NotebookLM's file type detection and
+      // Google's Scotty upload API both depend on the extension being present.
+      // Rename the temp file before passing it downstream.
+      if (file?.path && file.originalname) {
+        const ext = extname(file.originalname);
+        if (ext) {
+          const renamedPath = file.path + ext;
+          await rename(file.path, renamedPath);
+          file = { ...file, path: renamedPath };
+        }
+      }
+
       const session = parseSessionHeader(req);
 
       // Body may be JSON in a `payload` field (multipart) or the plain body.

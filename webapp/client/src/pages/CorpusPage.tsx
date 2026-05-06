@@ -2,16 +2,20 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ARTIFACT_KINDS,
+  deleteArtifact,
   getArtifact,
   getCorpusHealth,
   searchCorpus,
   shareArtifact,
+  updateArtifact,
+  viewArtifact,
   type ArtifactDetail,
   type ArtifactKind,
   type CorpusHealth,
   type SearchHit,
   type SearchResult,
   type ShareResult,
+  type ViewResult,
 } from '../lib/corpus';
 
 /**
@@ -130,6 +134,18 @@ export default function CorpusPage() {
     setDetailBusy(true);
     try {
       const d = await getArtifact(hit.artifact.id);
+      setDetail(d);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailBusy(false);
+    }
+  }
+
+  async function refreshDetail(id: string) {
+    setDetailBusy(true);
+    try {
+      const d = await getArtifact(id);
       setDetail(d);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -275,6 +291,17 @@ export default function CorpusPage() {
               setSelectedId(null);
               setDetail(null);
             }}
+            onMutated={() => void refreshDetail(selectedId)}
+            onDeleted={() => {
+              const gone = selectedId;
+              setSelectedId(null);
+              setDetail(null);
+              setResult((prev) =>
+                prev
+                  ? { ...prev, hits: prev.hits.filter((h) => h.artifact.id !== gone) }
+                  : prev,
+              );
+            }}
           />
         ) : (
           <div className="card text-sm text-slate-600">
@@ -416,17 +443,111 @@ function HitCard({
   );
 }
 
+function parseTags(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw as string[];
+  if (typeof raw === 'string') {
+    try {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) ? (p as string[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function DetailPanel({
   id,
   detail,
   busy,
   onClose,
+  onMutated,
+  onDeleted,
 }: {
   id: string;
   detail: ArtifactDetail | null;
   busy: boolean;
   onClose: () => void;
+  onMutated: () => void;
+  onDeleted: () => void;
 }): JSX.Element {
+  const a = (detail?.artifact ?? {}) as Record<string, unknown>;
+  const get = (...keys: string[]): unknown => {
+    for (const k of keys) if (a[k] != null) return a[k];
+    return undefined;
+  };
+
+  // ── Edit state ────────────────────────────────────────────────────
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editTags, setEditTags] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  function startEdit() {
+    setEditTitle(String(get('TITLE', 'title') ?? ''));
+    setEditTags(parseTags(get('TAGS', 'tags')).join(', '));
+    setEditing(true);
+    setEditError(null);
+  }
+
+  async function saveEdit() {
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      const tags = editTags
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .filter((t) => t.length > 0 && t.length <= 32);
+      await updateArtifact(id, { title: editTitle.trim(), tags });
+      setEditing(false);
+      onMutated();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  // ── Delete state ──────────────────────────────────────────────────
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    if (!window.confirm('Delete this artifact, its chunks, and the underlying blob?')) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await deleteArtifact(id);
+      onDeleted();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+      setDeleteBusy(false);
+    }
+  }
+
+  // ── View state ────────────────────────────────────────────────────
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewResult, setViewResult] = useState<ViewResult | null>(null);
+  const [viewBusy, setViewBusy] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
+
+  async function handleView() {
+    setViewBusy(true);
+    setViewError(null);
+    setViewResult(null);
+    try {
+      const r = await viewArtifact(id);
+      setViewResult(r);
+      setViewerOpen(true);
+    } catch (err) {
+      setViewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
   return (
     <div className="card space-y-3">
       <div className="flex items-start justify-between">
@@ -441,27 +562,135 @@ function DetailPanel({
 
       {busy && <div className="text-sm text-slate-500">Loading…</div>}
 
-      {detail && (
+      {detail && !editing && (
         <>
           <div className="space-y-1 text-sm">
             <ArtifactKvRow detail={detail} />
           </div>
+
+          {/* Tags */}
+          {(() => {
+            const tags = parseTags(get('TAGS', 'tags'));
+            return (
+              <div className="text-xs">
+                <div className="text-slate-500">Tags</div>
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {tags.length === 0 ? (
+                    <span className="text-slate-400">none</span>
+                  ) : (
+                    tags.map((t) => (
+                      <span key={t} className="badge">#{t}</span>
+                    ))
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           <NotebookLinkRow detail={detail} />
+
           <div className="border-t border-slate-200 pt-3 space-y-2">
-            <a
-              href={detail.downloadUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="btn-primary w-full"
-            >
-              Download blob ↗
-            </a>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href={detail.downloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-primary text-xs"
+              >
+                Download ↗
+              </a>
+              <button
+                type="button"
+                className="btn-secondary text-xs"
+                disabled={viewBusy}
+                onClick={() => void handleView()}
+              >
+                {viewBusy ? 'Loading…' : 'View'}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary text-xs"
+                onClick={startEdit}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="btn-danger text-xs"
+                disabled={deleteBusy}
+                onClick={() => void handleDelete()}
+              >
+                {deleteBusy ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+            {viewError && <p className="text-[11px] text-rose-600">{viewError}</p>}
+            {deleteError && <p className="text-[11px] text-rose-600">{deleteError}</p>}
             <p className="text-[11px] text-slate-500">
               PAR valid until {formatDate(detail.expiresAt)}
             </p>
             <ShareControls id={id} />
           </div>
+
+          {viewerOpen && viewResult && (
+            <ArtifactViewer
+              title={String(get('TITLE', 'title') ?? 'Artifact')}
+              result={viewResult}
+              onClose={() => setViewerOpen(false)}
+            />
+          )}
         </>
+      )}
+
+      {detail && editing && (
+        <div className="space-y-3">
+          <div>
+            <label className="label" htmlFor="cp-edit-title">Title</label>
+            <input
+              id="cp-edit-title"
+              className="input"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              maxLength={512}
+              disabled={editBusy}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="cp-edit-tags">
+              Tags <span className="text-slate-400">(comma-separated)</span>
+            </label>
+            <input
+              id="cp-edit-tags"
+              className="input"
+              value={editTags}
+              onChange={(e) => setEditTags(e.target.value)}
+              disabled={editBusy}
+              placeholder="q2-earnings, tencent"
+            />
+          </div>
+          {editError && (
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
+              {editError}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn-primary text-xs"
+              disabled={editBusy || editTitle.trim().length === 0}
+              onClick={() => void saveEdit()}
+            >
+              {editBusy ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={editBusy}
+              onClick={() => setEditing(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -617,5 +846,79 @@ function ArtifactKvRow({ detail }: { detail: ArtifactDetail }): JSX.Element {
         </div>
       ))}
     </dl>
+  );
+}
+
+function ArtifactViewer({
+  title,
+  result,
+  onClose,
+}: {
+  title: string;
+  result: ViewResult;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex h-[90vh] w-[90vw] max-w-6xl flex-col rounded-xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
+          <h2 className="truncate text-base font-semibold text-slate-900">{title}</h2>
+          <div className="ml-4 flex shrink-0 items-center gap-3">
+            <a
+              href={result.downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn-ghost text-xs"
+            >
+              Download ↗
+            </a>
+            <button type="button" className="btn-ghost text-xs" onClick={onClose}>
+              Close ✕
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {result.type === 'pdf' && (
+            <iframe src={result.downloadUrl} className="h-full w-full border-0" title={title} />
+          )}
+          {result.type === 'office' && result.officeViewerUrl && (
+            <iframe src={result.officeViewerUrl} className="h-full w-full border-0" title={title} />
+          )}
+          {result.type === 'html' && result.content && (
+            <div
+              className="h-full overflow-y-auto p-6 text-sm text-slate-800 [&_h1]:mb-2 [&_h1]:text-xl [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:font-medium [&_li]:ml-4 [&_ol]:mb-3 [&_ol]:list-decimal [&_p]:mb-3 [&_table]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-300 [&_td]:p-1 [&_th]:border [&_th]:border-slate-300 [&_th]:bg-slate-50 [&_th]:p-1 [&_ul]:mb-3 [&_ul]:list-disc"
+              dangerouslySetInnerHTML={{ __html: result.content }}
+            />
+          )}
+          {result.type === 'text' && result.content && (
+            <pre className="h-full overflow-auto whitespace-pre-wrap p-6 font-mono text-sm text-slate-800">
+              {result.content}
+            </pre>
+          )}
+          {result.type === 'unsupported' && (
+            <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center text-slate-600">
+              <p className="text-sm">
+                Inline preview is not available for this file type
+                {result.mimeType ? ` (${result.mimeType})` : ''}.
+              </p>
+              <a
+                href={result.downloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-primary"
+              >
+                Download file ↗
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

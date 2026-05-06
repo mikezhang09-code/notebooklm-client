@@ -7,11 +7,13 @@ import {
   listArtifacts,
   transcribeArtifact,
   updateArtifact,
+  viewArtifact,
   type ArtifactDetail,
   type ArtifactListItem,
   type ArtifactListResponse,
   type ArtifactKind,
   type TranscriptionStatus,
+  type ViewResult,
 } from '../lib/corpus';
 import { ShareControls } from './CorpusPage';
 
@@ -650,6 +652,27 @@ function DetailPanel({
     }
   }
 
+  // ── Artifact viewer ───────────────────────────────────────────────
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewResult, setViewResult] = useState<ViewResult | null>(null);
+  const [viewBusy, setViewBusy] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
+
+  async function handleView() {
+    setViewBusy(true);
+    setViewError(null);
+    setViewResult(null);
+    try {
+      const r = await viewArtifact(id);
+      setViewResult(r);
+      setViewerOpen(true);
+    } catch (err) {
+      setViewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setViewBusy(false);
+    }
+  }
+
   // ── M7: transcription retry ────────────────────────────────────────
   const [transcribeBusy, setTranscribeBusy] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
@@ -872,6 +895,14 @@ function DetailPanel({
             <button
               type="button"
               className="btn-secondary text-xs"
+              disabled={viewBusy}
+              onClick={() => void handleView()}
+            >
+              {viewBusy ? 'Loading…' : 'View'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary text-xs"
               onClick={startEdit}
             >
               Edit
@@ -885,9 +916,19 @@ function DetailPanel({
               {deleteBusy ? 'Deleting…' : 'Delete'}
             </button>
           </div>
+          {viewError && (
+            <p className="text-[11px] text-rose-600">{viewError}</p>
+          )}
           <p className="text-[11px] text-slate-500">
             PAR valid until {formatDate(detail.expiresAt)}
           </p>
+          {viewerOpen && viewResult && (
+            <ArtifactViewer
+              title={String(get('TITLE', 'title') ?? 'Artifact')}
+              result={viewResult}
+              onClose={() => setViewerOpen(false)}
+            />
+          )}
           <ShareControls id={id} />
           {editError && (
             <div className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700">
@@ -950,6 +991,91 @@ function DetailPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ArtifactViewer({
+  title,
+  result,
+  onClose,
+}: {
+  title: string;
+  result: ViewResult;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex h-[90vh] w-[90vw] max-w-6xl flex-col rounded-xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
+          <h2 className="truncate text-base font-semibold text-slate-900">{title}</h2>
+          <div className="ml-4 flex shrink-0 items-center gap-3">
+            <a
+              href={result.downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn-ghost text-xs"
+            >
+              Download ↗
+            </a>
+            <button type="button" className="btn-ghost text-xs" onClick={onClose}>
+              Close ✕
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {result.type === 'pdf' && (
+            <iframe
+              src={result.downloadUrl}
+              className="h-full w-full border-0"
+              title={title}
+            />
+          )}
+          {result.type === 'office' && result.officeViewerUrl && (
+            <iframe
+              src={result.officeViewerUrl}
+              className="h-full w-full border-0"
+              title={title}
+            />
+          )}
+          {result.type === 'html' && result.content && (
+            <div
+              className="h-full overflow-y-auto p-6 text-sm text-slate-800 [&_h1]:mb-2 [&_h1]:text-xl [&_h1]:font-bold [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mb-1 [&_h3]:font-medium [&_li]:ml-4 [&_ol]:mb-3 [&_ol]:list-decimal [&_p]:mb-3 [&_table]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-300 [&_td]:p-1 [&_th]:border [&_th]:border-slate-300 [&_th]:bg-slate-50 [&_th]:p-1 [&_ul]:mb-3 [&_ul]:list-disc"
+              dangerouslySetInnerHTML={{ __html: result.content }}
+            />
+          )}
+          {result.type === 'text' && result.content && (
+            <pre className="h-full overflow-auto whitespace-pre-wrap p-6 font-mono text-sm text-slate-800">
+              {result.content}
+            </pre>
+          )}
+          {result.type === 'unsupported' && (
+            <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center text-slate-600">
+              <p className="text-sm">
+                Inline preview is not available for this file type
+                {result.mimeType ? ` (${result.mimeType})` : ''}.
+              </p>
+              <a
+                href={result.downloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-primary"
+              >
+                Download file ↗
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

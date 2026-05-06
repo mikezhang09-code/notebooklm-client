@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import SourceInput, { buildSourcePayload, emptySource, type SourceState } from '../components/SourceInput';
 import ProgressLog, { type ProgressEntry } from '../components/ProgressLog';
 import { streamSse } from '../lib/api';
+import { saveJobArtifact } from '../lib/corpus';
 
 type Kind =
   | 'audio'
@@ -288,6 +289,7 @@ export default function GeneratePage() {
   const [busy, setBusy] = useState(false);
   const [entries, setEntries] = useState<ProgressEntry[]>([]);
   const [result, setResult] = useState<ResultData | null>(null);
+  const [saveStates, setSaveStates] = useState<Record<string, 'saving' | 'saved' | string>>({});
   const abortRef = useRef<AbortController | null>(null);
 
   // Reset when kind changes.
@@ -313,6 +315,7 @@ export default function GeneratePage() {
     setBusy(true);
     setEntries([]);
     setResult(null);
+    setSaveStates({});
     try {
       const { payload, file } = buildSourcePayload(source);
       // Drop empty strings so the server sees them as undefined.
@@ -350,6 +353,25 @@ export default function GeneratePage() {
   function handleCancel() {
     abortRef.current?.abort();
     addEntry('info', 'Cancelled.');
+  }
+
+  async function handleSave(d: { name: string; url: string }) {
+    if (!result?.jobId) return;
+    setSaveStates((s) => ({ ...s, [d.name]: 'saving' }));
+    try {
+      await saveJobArtifact({
+        jobId: result.jobId,
+        filename: d.name,
+        kind,
+        title: `${spec.title} — ${d.name.replace(/\.[^.]+$/, '')}`,
+      });
+      setSaveStates((s) => ({ ...s, [d.name]: 'saved' }));
+    } catch (err) {
+      setSaveStates((s) => ({
+        ...s,
+        [d.name]: err instanceof Error ? err.message : String(err),
+      }));
+    }
   }
 
   return (
@@ -425,10 +447,27 @@ export default function GeneratePage() {
               <div className="mb-1 text-sm font-medium text-slate-700">Downloads</div>
               <ul className="space-y-1">
                 {result.downloads.map((d) => (
-                  <li key={d.name}>
+                  <li key={d.name} className="flex items-center gap-3">
                     <a href={d.url} className="text-brand-600 underline" download>
                       {d.name}
                     </a>
+                    {saveStates[d.name] === 'saved' ? (
+                      <span className="text-xs text-emerald-600">Saved ✓</span>
+                    ) : saveStates[d.name] === 'saving' ? (
+                      <span className="text-xs text-slate-500">Saving…</span>
+                    ) : saveStates[d.name] ? (
+                      <span className="text-xs text-rose-600" title={saveStates[d.name]}>
+                        Save failed
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="text-xs text-slate-500 underline hover:text-slate-700"
+                        onClick={() => void handleSave(d)}
+                      >
+                        Save to library
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>

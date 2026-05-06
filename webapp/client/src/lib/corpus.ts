@@ -363,3 +363,42 @@ export interface SaveChatResult {
 export function saveChatToCorpus(req: SaveChatRequest): Promise<SaveChatResult> {
   return apiJson<SaveChatResult>('/api/corpus/chat/save', req);
 }
+
+// ──────────────────────────────────────────────────── artifact viewer ──
+
+export interface ViewResult {
+  type: 'pdf' | 'office' | 'html' | 'text' | 'unsupported';
+  downloadUrl: string;
+  expiresAt: string;
+  officeViewerUrl?: string;
+  content?: string;
+  mimeType?: string;
+}
+
+export function viewArtifact(id: string): Promise<ViewResult> {
+  return apiGet<ViewResult>(`/api/corpus/artifacts/${encodeURIComponent(id)}/view`);
+}
+
+// ──────────────────────────────────────────── save generated artifact ──
+
+export interface SaveJobArtifactRequest {
+  jobId: string;
+  filename: string;
+  /** Generate kind (e.g. 'report', 'data-table'). Server maps to corpus kind. */
+  kind: string;
+  title: string;
+  notebookId?: string;
+}
+
+export interface SaveJobArtifactResult {
+  id: string;
+  objectName: string;
+  bucket: string;
+  chunkCount: number;
+  textPreview: string;
+  sizeBytes: number;
+}
+
+export function saveJobArtifact(req: SaveJobArtifactRequest): Promise<SaveJobArtifactResult> {
+  return apiJson<SaveJobArtifactResult>('/api/corpus/save-from-job', req);
+}

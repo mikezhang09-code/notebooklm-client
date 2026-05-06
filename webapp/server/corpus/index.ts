@@ -15,6 +15,7 @@ export {
   putObject,
   createReadPar,
   deleteObject,
+  getObjectBuffer,
 } from './oci/storage.js';
 export { genaiHealthCheck, embedTexts, chatCohere } from './oci/genai.js';
 export type {
