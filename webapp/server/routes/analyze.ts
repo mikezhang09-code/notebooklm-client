@@ -7,6 +7,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import { unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { extname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { SourceInput } from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
@@ -19,7 +21,11 @@ export const analyzeRouter = Router();
 // `dest`, multer 1.x silently falls back to memoryStorage and
 // `req.file.path` is undefined, which surfaces downstream as the
 // "Invalid source — provide url, text, file upload, …" error.
-const upload = multer({ dest: tmpdir(), limits: { fileSize: 100 * 1024 * 1024 } });
+const storage = multer.diskStorage({
+  destination: tmpdir(),
+  filename: (_req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname)}`),
+});
+const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 
 interface AnalyzeBody {
   source?: {

@@ -1004,13 +1004,28 @@ function ArtifactViewer({
   result: ViewResult;
   onClose: () => void;
 }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'f' || e.key === 'F') setExpanded((v) => !v);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/60${expanded ? '' : ' p-4'}`}
       onClick={onClose}
     >
       <div
-        className="flex h-[90vh] w-[90vw] max-w-6xl flex-col rounded-xl bg-white shadow-2xl"
+        className={`flex flex-col bg-white${
+          expanded
+            ? ' h-screen w-screen'
+            : ' h-[90vh] w-[90vw] max-w-6xl rounded-xl shadow-2xl'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -1025,6 +1040,14 @@ function ArtifactViewer({
             >
               Download ↗
             </a>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              onClick={() => setExpanded((v) => !v)}
+              title={expanded ? 'Exit full screen (F)' : 'Full screen (F)'}
+            >
+              {expanded ? '⤡ Exit full screen' : '⤢ Full screen'}
+            </button>
             <button type="button" className="btn-ghost text-xs" onClick={onClose}>
               Close ✕
             </button>

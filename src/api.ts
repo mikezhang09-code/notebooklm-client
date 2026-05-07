@@ -6,7 +6,7 @@
  */
 
 import { statSync, readFileSync } from 'node:fs';
-import { resolve, basename } from 'node:path';
+import { resolve, basename, extname } from 'node:path';
 // SessionError used by addFileSource callers — not directly here
 import { parseEnvelopes } from './boq-parser.js';
 import { NB_RPC, NB_URLS, DEFAULT_USER_CONFIG, PLATFORM_WEB } from './rpc-ids.js';
@@ -166,6 +166,31 @@ export async function addFileSource(
   return { sourceId, title: fileName };
 }
 
+function fileMimeType(fileName: string): string {
+  const ext = extname(fileName).toLowerCase().slice(1);
+  const map: Record<string, string> = {
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    md: 'text/markdown',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
+    csv: 'text/csv',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ppt: 'application/vnd.ms-powerpoint',
+    epub: 'application/epub+zip',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    m4a: 'audio/mp4',
+    ogg: 'audio/ogg',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+  };
+  return map[ext] ?? 'application/octet-stream';
+}
+
 /**
  * Execute Scotty resumable upload: initiate session → upload bytes.
  */
@@ -227,23 +252,35 @@ async function scottyUpload(
     return { status: response.statusCode, headers: responseHeaders, body: responseBody };
   };
 
+  const mimeType = fileMimeType(fileName);
+  const { bl, fsid } = session;
+  const uploadInitUrl =
+    `${NB_URLS.UPLOAD}?authuser=0&bl=${encodeURIComponent(bl)}` +
+    (fsid ? `&f.sid=${encodeURIComponent(fsid)}` : '');
+
   try {
-    const initResp = await doPost(`${NB_URLS.UPLOAD}?authuser=0`, {
+    const initResp = await doPost(uploadInitUrl, {
       ...baseHeaders,
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      'Content-Type': 'application/json',
       'x-goog-upload-command': 'start',
       'x-goog-upload-header-content-length': String(fileSize),
+      'x-goog-upload-header-content-type': mimeType,
       'x-goog-upload-protocol': 'resumable',
     }, JSON.stringify({ PROJECT_ID: notebookId, SOURCE_NAME: fileName, SOURCE_ID: sourceId }));
 
     const uploadUrl = initResp.headers['x-goog-upload-url'];
     if (!uploadUrl) {
-      throw new Error(`Upload session initiation failed (HTTP ${initResp.status}): no x-goog-upload-url in response`);
+      const detail = `status=${initResp.status} headers=${JSON.stringify(initResp.headers)} body=${initResp.body.slice(0, 500)}`;
+      process.stderr.write(`[scottyUpload] initiation failed: ${detail}\n`);
+      throw new Error(
+        `Upload session initiation failed (HTTP ${initResp.status}): no x-goog-upload-url in response` +
+        (initResp.body ? ` — ${initResp.body.slice(0, 300)}` : ''),
+      );
     }
 
     const uploadResp = await doPost(uploadUrl, {
       ...baseHeaders,
-      'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
+      'Content-Type': mimeType,
       'x-goog-upload-command': 'upload, finalize',
       'x-goog-upload-offset': '0',
     }, fileBuffer);

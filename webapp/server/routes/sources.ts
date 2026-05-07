@@ -10,6 +10,8 @@ import { parseSessionHeader, SessionHeaderError } from '../lib/session-header.js
 import { withClient } from '../lib/client-factory.js';
 import { unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { extname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { NotebookClient } from 'notebooklm-client';
 
 interface SourceAddOpts {
@@ -45,10 +47,11 @@ export const sourcesRouter = Router({ mergeParams: true });
 // Disk storage (NOT memory) — `addFileSource()` requires an on-disk path.
 // `dest: undefined` is falsy and would silently fall back to memoryStorage;
 // pass an explicit tmpdir() so `req.file.path` is populated.
-const upload = multer({
-  dest: tmpdir(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+const storage = multer.diskStorage({
+  destination: tmpdir(),
+  filename: (_req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname)}`),
 });
+const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } }); // 100 MB
 
 sourcesRouter.post(
   '/',
