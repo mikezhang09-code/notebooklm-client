@@ -162,6 +162,59 @@ The webapp still works without corpus — only corpus-specific features (search,
 
 ---
 
+## Platform-Specific Examples
+
+### 1. Migrating to Ubuntu (User: `ubuntu`)
+
+If the target machine is an Ubuntu PC and your username is `ubuntu`:
+
+**Path Mapping:**
+- **Home Directory:** `/home/ubuntu`
+- **OCI Config:** `/home/ubuntu/.oci/config`
+- **Oracle Wallet:** `/home/ubuntu/.oci/wallets/nblm-corpus`
+- **NotebookLM Session:** `/home/ubuntu/.notebooklm/session.json`
+
+**Update `.env` on the new machine:**
+```dotenv
+OCI_CONFIG_FILE=/home/ubuntu/.oci/config
+ORACLE_WALLET_DIR=/home/ubuntu/.oci/wallets/nblm-corpus
+```
+
+**How to copy (using `scp` from Windows):**
+```powershell
+# From your current Windows machine:
+scp .env ubuntu@<remote-ip>:/path/to/notebooklm-client/.env
+scp -r $HOME/.oci ubuntu@<remote-ip>:/home/ubuntu/
+scp -r $HOME/.notebooklm ubuntu@<remote-ip>:/home/ubuntu/
+```
+
+---
+
+### 2. Migrating to macOS (User: `mike`)
+
+If the target machine is a Mac and your username is `mike`:
+
+**Path Mapping:**
+- **Home Directory:** `/Users/mike`
+- **OCI Config:** `/Users/mike/.oci/config`
+- **Oracle Wallet:** `/Users/mike/.oci/wallets/nblm-corpus`
+- **NotebookLM Session:** `/Users/mike/.notebooklm/session.json`
+
+**Update `.env` on the new machine:**
+```dotenv
+OCI_CONFIG_FILE=/Users/mike/.oci/config
+ORACLE_WALLET_DIR=/Users/mike/.oci/wallets/nblm-corpus
+```
+
+**How to copy (using `rsync` or `scp`):**
+```bash
+# From the Mac (pulling from Windows if SSH is enabled on Windows):
+scp mike_zhang@<windows-ip>:"C:/Users/mike_zhang/.env" ./ .env
+scp -r mike_zhang@<windows-ip>:"C:/Users/mike_zhang/.oci" ~/.oci
+```
+
+---
+
 ## Summary Checklist
 
 | #  | What to copy                           | Where it goes on new machine                   | Sensitive? | Required?                |
