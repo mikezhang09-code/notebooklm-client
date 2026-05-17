@@ -118,6 +118,7 @@ Features:
 - Generate every artifact type with live SSE progress logs
 - **One-click download** of any existing artifact (audio, report, quiz, flashcards, infographic, slides, data-table, video)
 - Analyze & chat with citations
+- **One-click session import** — click "⚡ Load from disk" on the login page to auto-load `~/.notebooklm/session.json` without copy-pasting JSON
 - Session verify / refresh / download, diagnose page
 - **Research Corpus** (optional, requires Oracle ADB + OCI Object Storage + OCI GenAI):
   - Auto-ingests every downloaded artifact in the background
@@ -397,6 +398,7 @@ Run `npx notebooklm diagnose` and paste the output when [reporting issues](https
 Common issues:
 - **"No session available"** → Run `npx notebooklm export-session`
 - **"Session expired"** → Tokens auto-refresh; if still fails, re-run `export-session`
+- **Web GUI HTTP 400 loop** → The browser has a stale session (old `bl` build label). Click "Sign out" in the sidebar → "⚡ Load from disk" to import the fresh session from disk
 - **Audio generation fails** → Check account limits with `getAccountInfo()`
 - **Connection timeout (China)** → Use `--proxy socks5://127.0.0.1:7890` or set `HTTPS_PROXY` env var
 - **Audio download returns login page** → Re-run `npx notebooklm export-session` to refresh cookies
@@ -523,6 +525,7 @@ npm run webapp:start
 - 生成所有产物类型，实时 SSE 进度日志
 - **一键下载**任意已有产物（音频、报告、测验、闪卡、信息图、幻灯片、数据表、视频）
 - 分析、带引用的对话
+- **一键导入 Session** —— 登录页点击「⚡ 从磁盘加载」自动读取 `~/.notebooklm/session.json`，无需手动粘贴 JSON
 - Session 验证 / 刷新 / 下载，诊断页面
 - **研究语料库**（可选，需要 Oracle ADB + OCI Object Storage + OCI GenAI）：
   - 下载产物时后台自动入库
@@ -802,6 +805,7 @@ npx notebooklm skill uninstall            # 卸载
 常见问题：
 - **"No session available"** → 运行 `npx notebooklm export-session`
 - **"Session expired"** → Token 会自动刷新；如果仍然失败，重新运行 `export-session`
+- **Web GUI HTTP 400 循环** → 浏览器中有旧的 session（`bl` 构建标签过期）。点侧边栏「Sign out」→ 登录页「⚡ 从磁盘加载」导入最新 session
 - **音频生成失败** → 通过 `getAccountInfo()` 检查账号限额
 - **连接超时（中国用户）** → 使用 `--proxy socks5://127.0.0.1:7890` 或设置 `HTTPS_PROXY` 环境变量
 - **下载音频拿到登录页** → 重新运行 `npx notebooklm export-session` 刷新 cookies
@@ -813,6 +817,16 @@ MIT
 ---
 
 ## Changelog / 更新日志
+
+### v0.7.1 (2026-05-17)
+
+- **One-click session import from disk** — new `GET /api/session/local` endpoint reads `~/.notebooklm/session.json` from the server's filesystem. The SessionGate login page now shows a prominent "⚡ Load from disk" button that auto-loads and verifies the session in one click — no more manual JSON copy-paste after running `export-session`. Especially useful on Windows where `curl-impersonate` is unavailable and the in-browser token refresh cannot recover a stale build label (`bl`).
+- **Stale session troubleshooting** — README now documents the HTTP 400 loop caused by an outdated `bl` build label in the browser's localStorage and the one-click fix.
+
+---
+
+- **一键从磁盘导入 Session** —— 新增 `GET /api/session/local` 端点，从服务器文件系统读取 `~/.notebooklm/session.json`。登录页新增醒目的「⚡ 从磁盘加载」按钮，一键完成加载 + 验证，无需再手动复制粘贴 JSON。在 Windows 上尤其有用——因为缺少 `curl-impersonate`，浏览器内 token 刷新无法恢复过期的 `bl` 构建标签。
+- **Session 过期排错** —— README 新增关于浏览器 localStorage 中旧 `bl` 导致 HTTP 400 循环的说明及一键修复方法。
 
 ### v0.7.0 (2026-05-05)
 

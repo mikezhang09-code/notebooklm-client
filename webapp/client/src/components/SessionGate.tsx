@@ -19,31 +19,57 @@ export default function SessionGate({ onSession }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
+  async function verifyAndSave(sessionJson: string) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sessionJson);
+    } catch {
+      throw new Error('Not valid JSON. Paste the contents of your session.json file.');
+    }
+    const envelope = parsed as { session?: StoredSession } | StoredSession;
+    const session = (envelope as { session?: StoredSession }).session ?? (envelope as StoredSession);
+    if (!session || typeof session !== 'object' || !session.at || !session.cookies) {
+      throw new Error('Session must contain at least "at" and "cookies" fields.');
+    }
+    // Temporarily save so apiJson picks it up from localStorage.
+    saveSession(session);
+    const result = await apiJson<VerifyResult>('/api/session/verify', {});
+    setInfo(
+      `Verified — ${result.notebookCount} notebook${result.notebookCount === 1 ? '' : 's'} accessible` +
+        (result.account?.isPlus ? ' (Plus)' : ''),
+    );
+    onSession();
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     setInfo(null);
     try {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        throw new Error('Not valid JSON. Paste the contents of your session.json file.');
+      await verifyAndSave(raw);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleLoadFromDisk() {
+    setBusy(true);
+    setError(null);
+    setInfo(null);
+    try {
+      const res = await fetch('/api/session/local');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
-      const envelope = parsed as { session?: StoredSession } | StoredSession;
-      const session = (envelope as { session?: StoredSession }).session ?? (envelope as StoredSession);
-      if (!session || typeof session !== 'object' || !session.at || !session.cookies) {
-        throw new Error('Session must contain at least "at" and "cookies" fields.');
-      }
-      // Temporarily save so apiJson picks it up from localStorage.
-      saveSession(session);
-      const result = await apiJson<VerifyResult>('/api/session/verify', {});
-      setInfo(
-        `Verified — ${result.notebookCount} notebook${result.notebookCount === 1 ? '' : 's'} accessible` +
-          (result.account?.isPlus ? ' (Plus)' : ''),
-      );
-      onSession();
+      const data = await res.json() as { session: StoredSession };
+      const sessionJson = JSON.stringify(data, null, 2);
+      setRaw(sessionJson);
+      // Auto-verify the loaded session.
+      await verifyAndSave(sessionJson);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -77,18 +103,28 @@ export default function SessionGate({ onSession }: Props) {
             <li>
               On your own machine, run:{' '}
               <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px]">
-                npx notebooklm-client export-session
+                npx notebooklm export-session
               </code>
             </li>
             <li>
-              Open the resulting file (default:{' '}
-              <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px]">
-                ~/.notebooklm/session.json
-              </code>
-              ).
+              Click <strong>Load from disk</strong> below, or paste the session JSON manually.
             </li>
-            <li>Paste its contents below, or upload the file.</li>
           </ol>
+
+          {/* Quick-load button */}
+          <button
+            type="button"
+            className="btn-primary w-full"
+            disabled={busy}
+            onClick={handleLoadFromDisk}
+          >
+            {busy ? 'Loading…' : '⚡ Load from disk (auto-detect session.json)'}
+          </button>
+
+          <div className="relative text-center text-xs text-slate-400">
+            <span className="relative z-10 bg-white px-2">or paste manually</span>
+            <div className="absolute inset-x-0 top-1/2 border-t border-slate-200" />
+          </div>
 
           <form onSubmit={handleSubmit} className="space-y-3">
             <div>
@@ -99,7 +135,6 @@ export default function SessionGate({ onSession }: Props) {
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
                 disabled={busy}
-                required
               />
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -136,3 +171,4 @@ export default function SessionGate({ onSession }: Props) {
     </div>
   );
 }
+

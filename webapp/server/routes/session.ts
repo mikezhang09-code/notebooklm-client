@@ -8,7 +8,7 @@
  */
 
 import { Router } from 'express';
-import { refreshTokens } from 'notebooklm-client';
+import { refreshTokens, loadSession } from 'notebooklm-client';
 import type { NotebookRpcSession } from 'notebooklm-client';
 import { asyncHandler } from '../lib/handler.js';
 import { parseSessionHeader } from '../lib/session-header.js';
@@ -33,6 +33,27 @@ sessionRouter.post(
       notebookCount: notebooks.length,
       account,
     });
+  }),
+);
+
+/**
+ * GET /api/session/local — read the session.json from the default disk path.
+ *
+ * This lets the webapp auto-load the session after `npx notebooklm export-session`
+ * without requiring the user to manually paste JSON. Only useful when the server
+ * runs on the same machine as the session file (i.e. local dev).
+ */
+sessionRouter.get(
+  '/local',
+  asyncHandler(async (_req, res) => {
+    const session = await loadSession();
+    if (!session) {
+      res.status(404).json({
+        error: 'No local session found. Run: npx notebooklm export-session',
+      });
+      return;
+    }
+    res.json({ session });
   }),
 );
 
