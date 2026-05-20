@@ -8,7 +8,10 @@
 
 import * as common from 'oci-common';
 import * as genai from 'oci-generativeaiinference';
+import oracledb from 'oracledb';
 import type { CorpusConfig } from '../config.js';
+import { withConnection } from './db.js';
+import { embedTextsGemini } from './gemini.js';
 
 /** Max inputs per embed call for cohere multilingual v3. */
 const EMBED_BATCH_SIZE = 96;
@@ -45,10 +48,10 @@ export type EmbedInputType =
   | 'CLUSTERING';
 
 /**
- * Embed an array of strings. Automatically batches into ≤96-input chunks
- * and concatenates results in input order. Returns a flat `number[][]`.
+ * Embed an array of strings. Dispatches to either OCI GenAI or the
+ * in-database ONNX model based on `cfg.embeddingProvider`.
  *
- * Cohere multilingual v3 quirks:
+ * Cohere multilingual v3 quirks (OCI path):
  *  - max 512 input tokens per string (≈ 2000 English chars or 1000 CJK chars)
  *  - we set `truncate: 'END'` so the model trims rather than 400-erroring
  *  - `inputType` distinguishes index vs query passes (Cohere v3 trains different vectors)
@@ -59,6 +62,27 @@ export async function embedTexts(
   inputType: EmbedInputType = 'SEARCH_DOCUMENT',
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
+
+  if (cfg.embeddingProvider === 'database') {
+    return embedTextsInDb(cfg, texts);
+  }
+
+  if (cfg.embeddingProvider === 'gemini') {
+    return embedTextsGemini(cfg, texts);
+  }
+
+  return embedTextsOci(cfg, texts, inputType);
+}
+
+/**
+ * OCI GenAI embedding path — calls the Cohere embed API via REST.
+ * Automatically batches into ≤96-input chunks.
+ */
+async function embedTextsOci(
+  cfg: CorpusConfig,
+  texts: string[],
+  inputType: EmbedInputType,
+): Promise<number[][]> {
   const client = await getGenAiClient(cfg);
   const results: number[][] = [];
 
@@ -86,6 +110,68 @@ export async function embedTexts(
   }
 
   return results;
+}
+
+/**
+ * In-database ONNX embedding — calls VECTOR_EMBEDDING() SQL function.
+ *
+ * The ONNX model must have been loaded into the database beforehand via
+ * DBMS_VECTOR.LOAD_ONNX_MODEL_CLOUD (see implementation plan / README).
+ *
+ * Benefits:
+ *   - Zero GenAI billing — runs entirely inside Oracle ADB
+ *   - No network round-trip — data stays inside the DB
+ *   - Works on Always Free tier ADB instances
+ *
+ * The inputType parameter is ignored because ONNX models don't distinguish
+ * SEARCH_QUERY vs SEARCH_DOCUMENT like Cohere v3 does. For symmetric models
+ * like bge-m3 this is fine; for asymmetric models the quality difference is
+ * negligible in practice.
+ */
+async function embedTextsInDb(
+  cfg: CorpusConfig,
+  texts: string[],
+): Promise<number[][]> {
+  const modelName = cfg.dbEmbedModel ?? 'BGE_M3_MODEL';
+
+  return withConnection(cfg, async (conn) => {
+    const results: number[][] = [];
+    // Process one at a time — VECTOR_EMBEDDING is a single-row SQL function.
+    // For bulk ingests this is slower than the OCI batch API but eliminates
+    // all billing; a future optimisation can use PL/SQL BULK COLLECT.
+    for (const text of texts) {
+      // Truncate to ~8000 chars — Oracle's ONNX runtime has a token limit
+      // and will error on overly long inputs. 8000 chars covers ~2000 CJK
+      // or ~4000 English tokens, well within bge-m3's 8192-token capacity.
+      const truncated = text.slice(0, 8000);
+      const result = await conn.execute(
+        // Model name is a SQL identifier, not a bind variable — this is safe
+        // because it comes from a config constant, not user input.
+        `SELECT VECTOR_EMBEDDING(${modelName} USING :txt AS DATA) AS emb FROM DUAL`,
+        { txt: truncated },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      const row = result.rows?.[0] as { EMB?: unknown } | undefined;
+      if (!row?.EMB) {
+        throw new Error(
+          `VECTOR_EMBEDDING(${modelName}) returned null — is the model loaded?`,
+        );
+      }
+      // oracledb returns VECTOR columns as Float64Array or number[];
+      // normalise to number[] for consistency with the OCI path.
+      const vec = row.EMB;
+      if (vec instanceof Float64Array || vec instanceof Float32Array) {
+        results.push(Array.from(vec));
+      } else if (Array.isArray(vec)) {
+        results.push(vec as number[]);
+      } else {
+        throw new Error(
+          `VECTOR_EMBEDDING returned unexpected type: ${typeof vec}`,
+        );
+      }
+    }
+    return results;
+  });
 }
 
 // ─────────────────────────────────────────────────────────── chat (RAG) ──
@@ -204,9 +290,16 @@ export async function genaiHealthCheck(cfg: CorpusConfig): Promise<{
   try {
     const vectors = await embedTexts(cfg, ['hello world'], 'SEARCH_QUERY');
     const dim = vectors[0]?.length ?? 0;
+    const actualModel =
+      cfg.embeddingProvider === 'database'
+        ? cfg.dbEmbedModel
+        : cfg.embeddingProvider === 'gemini'
+          ? cfg.geminiEmbedModel
+          : cfg.ociGenAiModel;
+
     return {
       ok: dim > 0,
-      model: cfg.ociGenAiModel,
+      model: actualModel,
       dimensions: dim,
       ...(dim === 0 ? { error: 'empty embedding returned' } : {}),
     };

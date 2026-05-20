@@ -12,6 +12,9 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+export type EmbeddingProvider = 'oci' | 'database' | 'gemini';
+export type ChatProvider = 'oci' | 'gemini' | 'mimo' | 'disabled';
+
 export interface CorpusConfig {
   /** OCI fundamentals */
   ociConfigFile: string;
@@ -44,6 +47,52 @@ export interface CorpusConfig {
   oracleWalletDir: string;
   /** Wallet password set when downloading from OCI Console. */
   oracleWalletPassword: string;
+
+  // ── Embedding provider ──────────────────────────────────────────────────
+  /**
+   * Where to generate text embeddings.
+   *   'oci'      — OCI GenAI REST API (cohere.embed-multilingual-v3.0) — billed per token
+   *   'database' — in-database ONNX model via VECTOR_EMBEDDING() SQL — free
+   *   'gemini'   — Google Gemini gemini-embedding-2 — free tier
+   * Default: 'oci' (backward-compatible).
+   */
+  embeddingProvider: EmbeddingProvider;
+  /**
+   * Name of the ONNX model loaded into Oracle ADB via
+   * DBMS_VECTOR.LOAD_ONNX_MODEL_CLOUD. Only used when embeddingProvider='database'.
+   * Example: 'BGE_M3_MODEL'
+   */
+  dbEmbedModel?: string;
+  /**
+   * Name of the Gemini embedding model (e.g. 'gemini-embedding-2').
+   * Used when embeddingProvider='gemini'.
+   */
+  geminiEmbedModel?: string;
+
+  // ── Chat provider ───────────────────────────────────────────────────────
+  /**
+   * Where to run RAG chat.
+   *   'oci'      — OCI GenAI Cohere chat (uses ociGenAiChatModel)
+   *   'gemini'   — Google Gemini API (free tier: 15 RPM)
+   *   'mimo'     — Xiaomi Mimo API (OpenAI compatible)
+   *   'disabled' — chat feature turned off, search/ingest still work
+   * Default: 'oci' when ociGenAiChatModel is set, otherwise 'disabled'.
+   */
+  chatProvider: ChatProvider;
+  /** Google Gemini API key. Required when chatProvider='gemini'. */
+  geminiApiKey?: string;
+  /**
+   * Gemini model identifier. Default: 'gemini-2.0-flash'.
+   * Other options: 'gemini-2.5-flash', 'gemini-1.5-pro', etc.
+   */
+  geminiModel: string;
+
+  /** Xiaomi Mimo API key. Required when chatProvider='mimo'. */
+  mimoApiKey?: string;
+  /** Xiaomi Mimo Base URL. Default: 'https://token-plan-sgp.xiaomimimo.com/v1'. */
+  mimoBaseUrl: string;
+  /** Xiaomi Mimo model identifier. Default: 'gpt-4o-mini' or whatever they map it to. Let's use generic default or let user override. */
+  mimoModel: string;
 
   /**
    * M7 — OCI Speech (Whisper model) for audio/video transcription.
@@ -165,6 +214,55 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
   const chatModel = envOrNull('OCI_GENAI_CHAT_MODEL');
   if (chatModel) (partial as CorpusConfig).ociGenAiChatModel = chatModel;
 
+  // ── Embedding provider ────────────────────────────────────────────────
+  const embProvRaw = envOrNull('EMBEDDING_PROVIDER');
+  const embProv: EmbeddingProvider =
+    embProvRaw === 'database'
+      ? 'database'
+      : embProvRaw === 'gemini'
+        ? 'gemini'
+        : 'oci';
+  (partial as CorpusConfig).embeddingProvider = embProv;
+  if (embProv === 'database') {
+    const dbModel = envOrNull('DB_EMBED_MODEL');
+    if (dbModel) (partial as CorpusConfig).dbEmbedModel = dbModel;
+  }
+  if (embProv === 'gemini') {
+    (partial as CorpusConfig).geminiEmbedModel = 
+      envOrNull('GEMINI_EMBED_MODEL') ?? 'gemini-embedding-2';
+  }
+
+
+  // ── Chat provider ─────────────────────────────────────────────────────
+  const chatProvRaw = envOrNull('CHAT_PROVIDER');
+  let chatProv: ChatProvider;
+  if (chatProvRaw === 'gemini') {
+    chatProv = 'gemini';
+  } else if (chatProvRaw === 'oci') {
+    chatProv = 'oci';
+  } else if (chatProvRaw === 'mimo') {
+    chatProv = 'mimo';
+  } else if (chatProvRaw === 'disabled') {
+    chatProv = 'disabled';
+  } else {
+    // Auto-detect: if GEMINI_API_KEY is set, use gemini; else if OCI chat model is set, use oci; else disabled.
+    const gemKey = envOrNull('GEMINI_API_KEY');
+    if (gemKey) chatProv = 'gemini';
+    else if (chatModel) chatProv = 'oci';
+    else chatProv = 'disabled';
+  }
+  (partial as CorpusConfig).chatProvider = chatProv;
+  const gemKey = envOrNull('GEMINI_API_KEY');
+  if (gemKey) (partial as CorpusConfig).geminiApiKey = gemKey;
+  (partial as CorpusConfig).geminiModel =
+    envOrNull('GEMINI_MODEL') ?? 'gemini-2.0-flash';
+
+  if (chatProv === 'mimo') {
+    (partial as CorpusConfig).mimoApiKey = envOrNull('MIMO_API_KEY') ?? undefined;
+    (partial as CorpusConfig).mimoBaseUrl = envOrNull('MIMO_BASE_URL') ?? 'https://token-plan-sgp.xiaomimimo.com/v1';
+    (partial as CorpusConfig).mimoModel = envOrNull('MIMO_MODEL') ?? 'gpt-4o';
+  }
+
   // Optional: OCI Speech (M7). Fully gated — disabling leaves the rest of
   // the corpus stack functional; audio/video ingests just skip transcription.
   const speechEnabledRaw = envOrNull('OCI_SPEECH_ENABLED');
@@ -196,8 +294,12 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
   cached = partial as CorpusConfig;
   console.log(
     `[corpus] enabled — region=${cached.ociRegion} bucket=${cached.ociBucket} ` +
-      `db=${cached.oracleConnectString} genai=${cached.ociGenAiRegion}` +
-      (cached.ociGenAiChatModel ? ` chat=${cached.ociGenAiChatModel}` : ' chat=disabled') +
+      `db=${cached.oracleConnectString}` +
+      ` embed=${cached.embeddingProvider}` +
+      (cached.embeddingProvider === 'database' ? `(${cached.dbEmbedModel ?? 'BGE_M3_MODEL'})` : `(${cached.ociGenAiModel})`) +
+      ` chat=${cached.chatProvider}` +
+      (cached.chatProvider === 'oci' && cached.ociGenAiChatModel ? `(${cached.ociGenAiChatModel})` : '') +
+      (cached.chatProvider === 'gemini' ? `(${cached.geminiModel})` : '') +
       (cached.speechEnabled
         ? ` speech=${cached.speechRegion}(lang=${cached.speechLanguage})`
         : ' speech=disabled'),

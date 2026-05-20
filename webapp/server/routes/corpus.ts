@@ -86,6 +86,72 @@ corpusRouter.get(
 );
 
 /**
+ * GET /api/corpus/models
+ * Fetches available models from Gemini and Mimo if configured.
+ */
+corpusRouter.get(
+  '/models',
+  asyncHandler(async (_req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+
+    const result: { gemini: string[]; mimo: string[] } = { gemini: [], mimo: [] };
+
+    if (cfg.geminiApiKey) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${cfg.geminiApiKey}`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const json = (await resp.json()) as any;
+          if (json.models && Array.isArray(json.models)) {
+            result.gemini = json.models
+              .map((m: any) => (m.name || '').replace('models/', ''))
+              .filter((m: string) => m.startsWith('gemini'));
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch Gemini models:', e);
+      }
+    }
+
+    if (cfg.mimoApiKey && cfg.mimoBaseUrl) {
+      try {
+        const baseUrl = cfg.mimoBaseUrl.replace(/\/$/, '');
+        const url = `${baseUrl}/models`;
+        const resp = await fetch(url, {
+          headers: { 'api-key': cfg.mimoApiKey }
+        });
+        if (resp.ok) {
+          const json = (await resp.json()) as any;
+          if (json.data && Array.isArray(json.data)) {
+            result.mimo = json.data.map((m: any) => m.id);
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch Mimo models:', e);
+      }
+    }
+
+    // Fallback if Mimo didn't return any models via API
+    if (result.mimo.length === 0) {
+      result.mimo = [
+        'mimo-v2.5-pro',
+        'mimo-v2.5',
+        'mimo-v2.5-tts-voiceclone',
+        'mimo-v2.5-tts-voicedesign',
+        'mimo-v2.5-tts'
+      ];
+    }
+
+    res.json(result);
+  }),
+);
+
+
+/**
  * POST /api/corpus/ingest  — multipart/form-data
  *
  * Fields:
@@ -726,10 +792,10 @@ corpusRouter.post(
       res.status(503).json({ error: 'corpus subsystem is disabled' });
       return;
     }
-    if (!cfg.ociGenAiChatModel) {
+    if (cfg.chatProvider === 'disabled') {
       res.status(503).json({
         error:
-          'corpus chat is disabled — set OCI_GENAI_CHAT_MODEL in .env to enable',
+          'corpus chat is disabled — set CHAT_PROVIDER or GEMINI_API_KEY in .env to enable',
       });
       return;
     }
@@ -778,6 +844,10 @@ corpusRouter.post(
           : undefined,
       maxDistance:
         typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,
+      chatProvider:
+        typeof body['chatProvider'] === 'string' ? body['chatProvider'] : undefined,
+      chatModel:
+        typeof body['chatModel'] === 'string' ? body['chatModel'] : undefined,
     });
     res.json(result);
   }),

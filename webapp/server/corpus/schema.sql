@@ -94,7 +94,7 @@ END;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2) Artifact chunks — one row per text chunk, with VECTOR embedding.
---    Cohere embed-multilingual-v3.0 → 1024-dim FLOAT32, cosine distance.
+--    3072-dim FLOAT32 (Gemini gemini-embedding-2), cosine distance.
 -- ─────────────────────────────────────────────────────────────────────────────
 DECLARE
   e_already_exists EXCEPTION;
@@ -109,7 +109,8 @@ BEGIN
       char_start      NUMBER,
       char_end        NUMBER,
       token_count     NUMBER,
-      embedding       VECTOR(1024, FLOAT32) NOT NULL,
+      -- Gemini gemini-embedding-2 is 3072 dimensions.
+      embedding       VECTOR(3072, FLOAT32) NOT NULL,
       created_at      TIMESTAMP WITH LOCAL TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
       CONSTRAINT pk_artifact_chunks PRIMARY KEY (id),
       CONSTRAINT fk_artifact_chunks_artifact FOREIGN KEY (artifact_id)

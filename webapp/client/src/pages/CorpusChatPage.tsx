@@ -4,6 +4,7 @@ import {
   ARTIFACT_KINDS,
   chatWithCorpus,
   getCorpusHealth,
+  getCorpusModels,
   type ArtifactKind,
   type ChatCitationSpan,
   type ChatResult,
@@ -131,6 +132,10 @@ export default function CorpusChatPage(): JSX.Element {
   const [maxSources, setMaxSources] = useState<number>(6);
   const [maxDistance, setMaxDistance] = useState<number>(0.75);
 
+  const [chatProvider, setChatProvider] = useState<'gemini' | 'mimo' | ''>('');
+  const [chatModel, setChatModel] = useState<string>('');
+  const [availableModels, setAvailableModels] = useState<{ gemini: string[]; mimo: string[] }>({ gemini: [], mimo: [] });
+
   // For citation-click → scroll source into view.
   // Keyed by `${turnIndex}:${sourceIndex}` so each turn keeps its own panel.
   const sourceRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -150,6 +155,13 @@ export default function CorpusChatPage(): JSX.Element {
       .catch(() => {
         /* ignored — UI will surface a generic error */
       });
+      
+    getCorpusModels()
+      .then((m) => {
+        if (!cancelled) setAvailableModels(m);
+      })
+      .catch((e) => console.error('Failed to fetch models', e));
+
     return () => {
       cancelled = true;
     };
@@ -191,6 +203,8 @@ export default function CorpusChatPage(): JSX.Element {
         kind: kind || undefined,
         maxSources,
         maxDistance,
+        chatProvider: chatProvider || undefined,
+        chatModel: chatModel || undefined,
       });
       const aTurn: AssistantTurn = {
         role: 'assistant',
@@ -396,6 +410,91 @@ export default function CorpusChatPage(): JSX.Element {
 
       {/* Right rail: filters */}
       <aside className="space-y-3">
+        <div className="card space-y-3">
+          <h2 className="text-sm font-semibold text-slate-700">
+            Model settings
+          </h2>
+          <div>
+            <label className="label" htmlFor="chat-provider">
+              Provider
+            </label>
+            <select
+              id="chat-provider"
+              className="input"
+              value={chatProvider}
+              onChange={(e) => {
+                setChatProvider(e.target.value as any);
+                setChatModel(''); // reset model when provider changes
+              }}
+              disabled={busy}
+            >
+              <option value="">(Default from config)</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="mimo">Xiaomi Mimo (OpenAI/Anthropic)</option>
+            </select>
+          </div>
+
+          {chatProvider === 'gemini' && (
+            <div>
+              <label className="label" htmlFor="chat-model-gemini">
+                Gemini Model
+              </label>
+              <select
+                id="chat-model-gemini"
+                className="input"
+                value={chatModel}
+                onChange={(e) => setChatModel(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">(Default from config)</option>
+                {availableModels.gemini.length > 0 ? (
+                  availableModels.gemini.map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))
+                ) : (
+                  <optgroup label="Loading models or none found">
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                  </optgroup>
+                )}
+              </select>
+            </div>
+          )}
+
+          {chatProvider === 'mimo' && (
+            <div>
+              <label className="label" htmlFor="chat-model-mimo">
+                Mimo Model
+              </label>
+              <select
+                id="chat-model-mimo"
+                className="input"
+                value={chatModel}
+                onChange={(e) => setChatModel(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">(Default from config)</option>
+                {availableModels.mimo.length > 0 ? (
+                  availableModels.mimo.map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))
+                ) : (
+                  <optgroup label="Loading models or none found">
+                    <option value="mimo-v2.5-pro">mimo-v2.5-pro</option>
+                    <option value="mimo-v2.5">mimo-v2.5</option>
+                    <option value="mimo-v2.5-tts-voiceclone">mimo-v2.5-tts-voiceclone</option>
+                    <option value="mimo-v2.5-tts-voicedesign">mimo-v2.5-tts-voicedesign</option>
+                    <option value="mimo-v2.5-tts">mimo-v2.5-tts</option>
+                  </optgroup>
+                )}
+              </select>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Select the target model to proxy through Xiaomi Mimo.
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="card space-y-3">
           <h2 className="text-sm font-semibold text-slate-700">
             Retrieval filters

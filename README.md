@@ -120,11 +120,12 @@ Features:
 - Analyze & chat with citations
 - **One-click session import** — click "⚡ Load from disk" on the login page to auto-load `~/.notebooklm/session.json` without copy-pasting JSON
 - Session verify / refresh / download, diagnose page
-- **Research Corpus** (optional, requires Oracle ADB + OCI Object Storage + OCI GenAI):
-  - Auto-ingests every downloaded artifact in the background
+- **Research Corpus** (optional, requires Oracle ADB + OCI Object Storage; supports multiple embedding and chat providers):
+  - Auto-ingests every downloaded artifact in the background (generating 1024 or 3072-dimensional vector embeddings)
+  - Supports OCI GenAI (Cohere), Google Gemini (free-tier `gemini-embedding-2`), and free in-database local ONNX models (e.g. `BGE_M3_MODEL`) for embeddings
   - Manual `/corpus/upload` page for any PDF/DOCX/HTML/MD/TXT/CSV/JSON
   - `/corpus` semantic search with kind + distance filters, notebook cross-links
-  - `/corpus/chat` retrieval-augmented chat with inline citations (gated on `OCI_GENAI_CHAT_MODEL`)
+  - `/corpus/chat` retrieval-augmented chat with inline citations (powered by OCI GenAI, Google Gemini, or Xiaomi Mimo LLMs, with dynamic model settings panel)
   - `/corpus/library` with rename, retag, per-row + bulk delete, shareable links (1 h – 7 d TTL)
 
 Deploy to Hugging Face Spaces:
@@ -527,11 +528,12 @@ npm run webapp:start
 - 分析、带引用的对话
 - **一键导入 Session** —— 登录页点击「⚡ 从磁盘加载」自动读取 `~/.notebooklm/session.json`，无需手动粘贴 JSON
 - Session 验证 / 刷新 / 下载，诊断页面
-- **研究语料库**（可选，需要 Oracle ADB + OCI Object Storage + OCI GenAI）：
-  - 下载产物时后台自动入库
+- **研究语料库**（可选，需要 Oracle ADB + OCI Object Storage；支持多嵌入及问答服务商）：
+  - 下载产物时后台自动入库（自动生成 1024 或 3072 维的高维向量嵌入）
+  - 向量嵌入生成端支持 OCI GenAI (Cohere v3.0)、Google Gemini (`gemini-embedding-2`) 以及**免费**在库运行的本地 ONNX 模型 (如 `BGE_M3_MODEL` 等)
   - `/corpus/upload` 页面手动上传 PDF/DOCX/HTML/MD/TXT/CSV/JSON
   - `/corpus` 跨笔记本语义搜索，支持类型、距离阈值过滤，以及返回原始笔记本的反向链接
-  - `/corpus/chat` 基于检索增强（RAG）的对话，回答带内联引用（需要 `OCI_GENAI_CHAT_MODEL`）
+  - `/corpus/chat` 基于检索增强（RAG）的对话，回答带内联引用（支持 OCI GenAI、Google Gemini 和小米 Mimo 等主流后端，并在右侧支持动态模型设置）
   - `/corpus/library` 支持重命名、改标签、逐条/批量删除、生成分享链接（1 小时 – 7 天 TTL）
 
 部署到 Hugging Face Spaces：
@@ -817,6 +819,38 @@ MIT
 ---
 
 ## Changelog / 更新日志
+
+### v0.8.0 (2026-05-20)
+
+- **Multi-provider Vector Embeddings** — You can now choose where to generate text embeddings via the `EMBEDDING_PROVIDER` env variable:
+  - `oci` (default): OCI GenAI Cohere Multilingual v3.0 (1024 dimensions)
+  - `database`: **Free** in-database ONNX model embeddings (e.g. `BGE_M3_MODEL` producing 1024-dim vectors) via SQL `VECTOR_EMBEDDING()` — runs entirely inside Oracle Autonomous Database at zero token cost and ultra-low latency. Script `webapp/server/corpus/onnx/convert_bge_m3.py` converts the model to augmented ONNX format, and `load_model.sql` loads it into ADB.
+  - `gemini`: Google Gemini `gemini-embedding-2` model (3072 dimensions) — free tier via the batch embedding endpoint.
+- **Multi-provider RAG Chat** — Chat over your corpus now supports multiple LLM backends via the `CHAT_PROVIDER` env variable or automatic detection:
+  - `oci`: OCI GenAI Cohere Chat.
+  - `gemini`: **Free** Google Gemini API (defaulting to `gemini-2.0-flash`, configurable to `gemini-2.5-flash` or `gemini-1.5-pro` etc.) with standard inline citation mapping (`[1]`, `[2]`) parsed dynamically.
+  - `mimo`: Xiaomi Mimo API (OpenAI-compatible) using GPT models (e.g. `gpt-4o`, `gpt-4o-mini`) with inline source reference matching.
+  - `disabled`: Turns off chat, keeping search and ingestion active.
+- **Dynamic Model Discovery & Web GUI Sidebar Panel** — Added a "Model settings" panel in the chat page right rail. When configured, it dynamically queries available model lists from Google Gemini and Xiaomi Mimo API endpoints, enabling you to select your preferred chat model directly from the frontend.
+- **Robust Re-embedding & Ingest Backfiller** — New script `webapp/scripts/reembed.ts` queries the database for any uploaded or downloaded artifacts lacking embedded chunks, downloads their raw files from Object Storage, re-extracts text, generates embeddings via the active provider (e.g., Gemini with rate-limit retry logic), and batch-inserts them back into Autonomous Database.
+- **Database Schema Upgrades** — The default database schema (`schema.sql`) now allocates `VECTOR(3072, FLOAT32)` to natively support high-fidelity 3072-dimensional vector embeddings, matching Google Gemini's flagship embedding models.
+
+---
+
+- **多服务商向量嵌入支持** —— 可通过环境变量 `EMBEDDING_PROVIDER` 选择向量嵌入的生成地：
+  - `oci`（默认）：OCI GenAI Cohere Multilingual v3.0（1024 维）—— 按 token 收费。
+  - `database`：**免费**数据库内置 ONNX 模型嵌入（如 `BGE_M3_MODEL` 产生 1024 维向量）—— 通过 `VECTOR_EMBEDDING()` SQL 函数在 Oracle ADB 内部运行，免去外部 API 费用且拥有极低延迟。配套 `convert_bge_m3.py` 将模型转换为 Augmented ONNX 格式，`load_model.sql` 导入 ADB。
+  - `gemini`：Google Gemini `gemini-embedding-2` 模型（3072 维）—— 使用免费 API 批量嵌入接口。
+- **多服务商 RAG 对话后端** —— 跨语料库问答新增支持多种大模型后端，可通过 `CHAT_PROVIDER` 显式设置或自动探测：
+  - `oci`：OCI GenAI Cohere 对话模型。
+  - `gemini`：**免费** Google Gemini API（默认 `gemini-2.0-flash`，可选 `gemini-2.5-flash`/`gemini-1.5-pro` 等），结合 System Instruction 约束和正则解析，实现标准的 inline 引用标志（如 `[1]`, `[2]`）原生还原。
+  - `mimo`：小米 Mimo API（OpenAI 兼容），支持通过 `gpt-4o`、`gpt-4o-mini` 开展 RAG 对话，自动匹配内联引用。
+  - `disabled`：关闭 RAG 对话，保留常规库文件管理与检索。
+- **动态模型发现与 Web 界面控制** —— 聊天页面右侧边栏新增「Model settings」模型设置面板。配置后能自动从 Gemini 和 Mimo 端点获取可用模型列表，支持在前端交互式随意切换大模型。
+- **自动语料重构与补全脚本** —— 新增 `webapp/scripts/reembed.ts`，自动查找数据库中所有未切块或缺失向量的产物，重新从 Object Storage 读出原文、切块、调用当前嵌入服务商（针对 Gemini 具备自动限流等待和 5 次重试机制）并将高维 Float32 向量批量刷入 Autonomous Database。
+- **向量维度升级** —— 数据库 schema 设计 (`schema.sql`) 升级至 `VECTOR(3072, FLOAT32)`，原生匹配 Google Gemini 高保真 3072 维高维向量嵌入。
+
+---
 
 ### v0.7.1 (2026-05-17)
 

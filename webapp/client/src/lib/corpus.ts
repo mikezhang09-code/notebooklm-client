@@ -38,6 +38,17 @@ export function getCorpusHealth(): Promise<CorpusHealth> {
   return apiGet<CorpusHealth>('/api/corpus/health');
 }
 
+// ───────────────────────────────────────────────────────────── models ──
+
+export interface CorpusModels {
+  gemini: string[];
+  mimo: string[];
+}
+
+export function getCorpusModels(): Promise<CorpusModels> {
+  return apiGet<CorpusModels>('/api/corpus/models');
+}
+
 // ───────────────────────────────────────────────────────────── search ──
 
 export type ArtifactKind =
@@ -297,6 +308,8 @@ export interface ChatRequest {
   maxSources?: number;
   snippetsPerSource?: number;
   maxDistance?: number;
+  chatProvider?: string;
+  chatModel?: string;
 }
 
 export function chatWithCorpus(req: ChatRequest): Promise<ChatResult> {

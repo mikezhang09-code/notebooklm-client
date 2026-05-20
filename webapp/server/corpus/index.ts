@@ -7,7 +7,7 @@
  */
 
 export { getCorpusConfig } from './config.js';
-export type { CorpusConfig } from './config.js';
+export type { CorpusConfig, EmbeddingProvider, ChatProvider } from './config.js';
 
 export { dbHealthCheck, withConnection, closeDbPool } from './oci/db.js';
 export {
@@ -77,8 +77,8 @@ export interface CorpusHealth {
   db: { ok: boolean; version?: string; user?: string; error?: string };
   storage: { ok: boolean; bucket?: string; approxObjectCount?: number; error?: string };
   genai: { ok: boolean; model?: string; dimensions?: number; error?: string };
-  /** RAG chat is gated on a separate (optional) chat-model env var. */
-  chat: { enabled: boolean; model?: string };
+  /** RAG chat is gated on a separate provider config. */
+  chat: { enabled: boolean; provider?: string; model?: string };
   /**
    * M7 — OCI Speech / transcription. Enabled when `OCI_SPEECH_ENABLED`
    * is not set to a falsy value AND the Speech service responded to a
@@ -133,8 +133,14 @@ export async function corpusHealth(): Promise<CorpusHealth> {
     db,
     storage,
     genai,
-    chat: cfg.ociGenAiChatModel
-      ? { enabled: true, model: cfg.ociGenAiChatModel }
+    chat: cfg.chatProvider !== 'disabled'
+      ? {
+          enabled: true,
+          provider: cfg.chatProvider,
+          model: cfg.chatProvider === 'gemini'
+            ? cfg.geminiModel
+            : cfg.ociGenAiChatModel,
+        }
       : { enabled: false },
     transcription: {
       enabled: cfg.speechEnabled,

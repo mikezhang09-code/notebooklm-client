@@ -80,10 +80,12 @@ webapp/
 The webapp can optionally persist every artifact you generate (and any document
 you upload) to a personal research corpus backed by:
 
-- **Oracle Autonomous Database 23ai/26ai** — metadata + 1024-dim `VECTOR` chunks
+- **Oracle Autonomous Database 23ai/26ai** — metadata + high-fidelity `VECTOR` chunks (supporting up to 3072-dimensional vector spaces)
 - **OCI Object Storage** — blob payloads
-- **OCI Generative AI** (`cohere.embed-multilingual-v3.0`) — embeddings for
-  semantic search across the whole corpus (English + Chinese + 100+ langs)
+- **Text Embeddings Provider** — dynamically configurable via `EMBEDDING_PROVIDER` env var:
+  - `oci` (default): OCI Generative AI (`cohere.embed-multilingual-v3.0`, 1024-dim)
+  - `database`: Free in-database ONNX model (e.g. `BGE_M3_MODEL`, 1024-dim) using the SQL `VECTOR_EMBEDDING()` function
+  - `gemini`: Google Gemini (`gemini-embedding-2`, 3072-dim) via free tier batch embeddings API
 
 The subsystem is **fully optional**: if no env vars are set, the webapp
 runs exactly as before and none of the OCI SDKs are reached. Set them and
@@ -94,9 +96,10 @@ a **Research** section appears in the sidebar with four pages:
   that mints a fresh download PAR and a shareable link.
 - **Chat** (`/corpus/chat`) — retrieval-augmented chat. The model is
   given the top-N matching snippets as `documents` and emits inline
-  citations that link the answer back to the source artifacts. Gated
-  on the optional `OCI_GENAI_CHAT_MODEL` env var (e.g.
-  `cohere.command-r-plus-08-2024`); leave it unset to hide the page.
+  citations that link the answer back to the source artifacts. Powered by
+  multiple providers (OCI GenAI Cohere, Google Gemini, or Xiaomi Mimo). Gated
+  on the `CHAT_PROVIDER` or presence of credentials (e.g. `GEMINI_API_KEY`, `OCI_GENAI_CHAT_MODEL`);
+  leave it unset to hide the page. Supports dynamic sidebar controls for provider/model switching.
 - **Library** (`/corpus/library`) — paginated table of every artifact
   with kind / origin / title filters, row selection for bulk delete,
   inline rename + retag, per-row delete, a cross-link badge that
@@ -129,7 +132,7 @@ thanks to a `(notebook_id, artifact_id)` unique index.
    npm run webapp:dev   # or webapp:start
    curl http://localhost:7860/api/corpus/health
    ```
-   You should see `{"enabled": true, "db": {"ok": true}, "storage": {"ok": true}, "genai": {"ok": true, "dimensions": 1024}, "transcription": {"enabled": true, "ok": true, ...}}`.
+   You should see `{"enabled": true, "db": {"ok": true}, "storage": {"ok": true}, "genai": {"ok": true, "model": "...", "dimensions": ...}, "chat": {"enabled": true, "provider": "..."}, "transcription": {"enabled": true, ...}}`.
 
 If `enabled` is `false`, `db.error` (etc.) will tell you which env var is
 missing or which IAM/network call failed.
@@ -141,7 +144,7 @@ NotebookLM artifact OR uploaded file
   ↓
 extract text → chunk (800 chars, 100 overlap, sentence-aware)
   ↓
-OCI GenAI embed-multilingual-v3.0  →  1024-dim vectors
+Embeddings generator (OCI GenAI Cohere v3.0, In-DB ONNX, or Google Gemini)  →  1024/3072-dim vectors
   ↓
 ADB tables:  artifacts (catalog) + artifact_chunks (text + VECTOR)
 Object Storage:  the original blob bytes
@@ -166,6 +169,7 @@ region can take 1–5 minutes.
 
 ```
 GET    /api/corpus/health                       subsystem status (db + storage + genai)
+GET    /api/corpus/models                       list available models from Google Gemini and Xiaomi Mimo (for Web GUI settings panel)
 
 POST   /api/corpus/ingest                       multipart: file + title + kind [+ origin/tags/metadata]
                                                 Dedupes on (notebook_id, artifact_id) for NotebookLM rows.
@@ -182,12 +186,13 @@ POST   /api/corpus/search                       body: { query, kind?, notebookId
                                                 Semantic kNN over embeddings, grouped per artifact.
 
 POST   /api/corpus/chat                         body: { question, history?, kind?, notebookId?,
-                                                         maxSources?, snippetsPerSource?, maxDistance? }
+                                                         maxSources?, snippetsPerSource?, maxDistance?,
+                                                         chatProvider?, chatModel? }
                                                 Retrieval-augmented chat. Returns
                                                 { answer, citations[], sources[], retrievalMs, chatMs, ... }
                                                 where each citation maps spans in the answer back to
                                                 1-based source indices in `sources`. 503 if
-                                                `OCI_GENAI_CHAT_MODEL` is not set.
+                                                chat is disabled.
 
 POST   /api/corpus/artifacts/:id/transcribe     M7 — manually (re-)trigger transcription on an
                                                 audio/video row. Returns 202 { status: "queued" };

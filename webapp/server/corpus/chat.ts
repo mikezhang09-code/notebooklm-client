@@ -14,6 +14,8 @@
 
 import type { CorpusConfig } from './config.js';
 import { chatCohere, type CohereChatTurn } from './oci/genai.js';
+import { chatGemini } from './oci/gemini.js';
+import { chatMimo } from './oci/mimo.js';
 import { searchCorpus, type SearchHit, type SearchSnippet } from './search.js';
 
 export interface ChatTurn {
@@ -39,6 +41,10 @@ export interface ChatOptions {
    * Default 0.75 — anything worse is probably off-topic.
    */
   maxDistance?: number;
+  /** Optional override for chat provider */
+  chatProvider?: string;
+  /** Optional override for chat model */
+  chatModel?: string;
 }
 
 export interface ChatCitationSpan {
@@ -93,9 +99,9 @@ export async function chatCorpus(
   cfg: CorpusConfig,
   opts: ChatOptions,
 ): Promise<ChatResult> {
-  if (!cfg.ociGenAiChatModel) {
+  if (cfg.chatProvider === 'disabled') {
     throw new Error(
-      'corpus chat disabled — set OCI_GENAI_CHAT_MODEL in .env to enable',
+      'corpus chat disabled — set CHAT_PROVIDER or GEMINI_API_KEY in .env to enable',
     );
   }
   const question = opts.question.trim();
@@ -167,16 +173,40 @@ export async function chatCorpus(
   }
 
   // ── 3. Chat ─────────────────────────────────────────────────────────
-  const t1 = Date.now();
-  const outcome = await chatCohere(cfg, {
-    question,
-    preamble: DEFAULT_PREAMBLE,
-    history,
-    documents,
-    maxTokens: 900,
-    temperature: 0.2,
-  });
-  const chatMs = Date.now() - t1;
+  const chatStart = performance.now();
+  let outcome;
+  const provider = opts.chatProvider || cfg.chatProvider;
+  
+  if (provider === 'gemini') {
+    // If chatModel is provided, create a copy of cfg with the override
+    const runCfg = opts.chatModel ? { ...cfg, geminiModel: opts.chatModel } : cfg;
+    outcome = await chatGemini(runCfg, {
+      question: opts.question,
+      preamble: DEFAULT_PREAMBLE,
+      history,
+      documents,
+    });
+  } else if (provider === 'mimo') {
+    const runCfg = opts.chatModel ? { ...cfg, mimoModel: opts.chatModel } : cfg;
+    outcome = await chatMimo(runCfg, {
+      question: opts.question,
+      preamble: DEFAULT_PREAMBLE,
+      history,
+      documents,
+    });
+  } else {
+    // Fall back to oci
+    const runCfg = opts.chatModel ? { ...cfg, ociGenAiChatModel: opts.chatModel } : cfg;
+    outcome = await chatCohere(runCfg, {
+      question: opts.question,
+      preamble: DEFAULT_PREAMBLE,
+      history,
+      documents,
+      maxTokens: 900,
+      temperature: 0.2,
+    });
+  }
+  const chatMs = performance.now() - chatStart;
 
   // ── 4. Re-key citations to 1-based source indices ────────────────────
   // Cohere returns documentIds like ["doc_2_0", "doc_2_1"]. We turn those
