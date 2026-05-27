@@ -18,6 +18,7 @@ export const NB_RPC = {
   GET_SOURCE_SUMMARY: 'tr032e',
   DELETE_SOURCE: 'tGMBJ',
   REFRESH_SOURCE: 'FLmJqe',
+  CHECK_SOURCE_FRESHNESS: 'yR9Yof',
   UPDATE_SOURCE: 'b7Wfje',
 
   // ── Research ──
@@ -34,16 +35,20 @@ export const NB_RPC = {
   GET_INTERACTIVE_HTML: 'v9rmvd',
   EXPORT_ARTIFACT: 'Krh3pd',
   SHARE_ARTIFACT: 'RGP97b',
+  REVISE_SLIDE: 'KmcKPe',
+  GET_SUGGESTED_REPORTS: 'ciyUvf',
   GET_STUDIO_CONFIG: 'sqTeoe',
 
   // ── Notes & Mind Maps ──
   CREATE_NOTE: 'CYK0Xb',
   GET_NOTES: 'cFji9',
+  GENERATE_MIND_MAP: 'yyryJe',
   UPDATE_NOTE: 'cYAfTb',
   DELETE_NOTE: 'AH0mwd',
 
   // ── Chat ──
   LIST_CHAT_THREADS: 'hPTbtc',
+  GET_CONVERSATION_TURNS: 'khqZz',
   DELETE_CHAT_THREAD: 'J7Gthc',
 
   // ── Sharing ──
