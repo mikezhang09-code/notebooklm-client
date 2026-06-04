@@ -82,6 +82,14 @@ import type {
 
 export type TransportMode = 'browser' | 'curl-impersonate' | 'tls-client' | 'http' | 'auto';
 
+type ChatHistoryEntry = [string, null, number];
+
+interface ChatState {
+  threadId: string;
+  history: ChatHistoryEntry[];
+  turnCounter: number;
+}
+
 export interface ConnectOptions extends BrowserLaunchOptions {
   /** Transport mode. Default: 'browser'. */
   transport?: TransportMode;
@@ -133,8 +141,8 @@ export class NotebookClient {
   private proxy?: string;
   private reqCounter = 100000;
   private activeNotebookId = '';
-  private chatThreadId = '';
-  private chatHistory: Array<[string, null, number]> = [];
+  private chatStates = new Map<string, ChatState>();
+  private chatQueues = new Map<string, Promise<void>>();
 
   // ── Lifecycle ──
 
@@ -329,22 +337,37 @@ export class NotebookClient {
   }
 
   async callChatStream(notebookId: string, message: string, sourceIds: string[]): Promise<string> {
+    return this.callChatStreamWithState(this.getChatState(notebookId), notebookId, message, sourceIds);
+  }
+
+  private async callChatStreamWithState(
+    state: ChatState,
+    notebookId: string,
+    message: string,
+    sourceIds: string[],
+  ): Promise<string> {
     if (!this.transport) throw new SessionError('Not connected');
 
     const sourceIdArrays = sourceIds.map((id) => [[id]]);
     const { at, bl, fsid } = this.transport.getSession();
     const reqId = this.nextReqId();
 
+    // The web UI sends `null` for the first request on a fresh session and an
+    // accumulating array thereafter. Sending `[]` instead of `null` for the
+    // first turn causes the server to accept the message but not write it to
+    // the notebook's visible chat thread on follow-ups.
+    const history = state.history.length > 0 ? state.history : null;
+
     const innerPayload = [
       sourceIdArrays,
       message,
-      this.chatHistory.length > 0 ? this.chatHistory : [],
+      history,
       [2, null, [1], [1]],
-      this.chatThreadId || null,
+      state.threadId || null,
       null,
       null,
       notebookId,
-      1,
+      state.turnCounter + 1,
     ];
 
     const doCall = (): Promise<string> =>
@@ -385,10 +408,23 @@ export class NotebookClient {
 
   // ── Low-level API (delegated to api.ts) ──
 
-  async createNotebook(): Promise<{ notebookId: string }> {
+  async createNotebook(): Promise<{ notebookId: string; threadId: string }> {
     const result = await api.createNotebook(this.rpc);
     this.activeNotebookId = result.notebookId;
+    if (result.threadId) {
+      this.bindChatThread(result.notebookId, result.threadId);
+    }
     return result;
+  }
+
+  /**
+   * Lists chat thread IDs bound to a notebook. The first entry is the default
+   * thread the web UI uses, so `sendChat`/`sendChatWithCitations` resolve it
+   * automatically — call this only when you need to enumerate threads or seed
+   * a custom one.
+   */
+  async listChatThreads(notebookId: string): Promise<string[]> {
+    return api.listChatThreads(this.rpc, notebookId);
   }
 
   async listNotebooks(): Promise<NotebookInfo[]> {
@@ -644,29 +680,109 @@ export class NotebookClient {
   }
 
   async sendChat(notebookId: string, message: string, sourceIds: string[]): Promise<{ text: string; threadId: string }> {
-    const result = await api.sendChat(
-      this.callChatStream.bind(this),
-      notebookId, message, sourceIds,
-    );
-    if (result.threadId) this.chatThreadId = result.threadId;
-    this.chatHistory.push([message, null, 1]);
-    if (result.text) {
-      this.chatHistory.push([result.text, null, 2]);
-    }
-    return result;
+    return this.enqueueChat(notebookId, async () => {
+      const state = await this.ensureChatThread(notebookId);
+      const result = await api.sendChat(
+        (id, text, sources) => this.callChatStreamWithState(state, id, text, sources),
+        notebookId, message, sourceIds,
+      );
+      this.recordChatTurn(state, message, result.text, result.threadId);
+      return result;
+    });
   }
 
   async sendChatWithCitations(notebookId: string, message: string, sourceIds: string[]): Promise<ChatWithCitationsResult> {
-    const result = await api.sendChatWithCitations(
-      this.callChatStream.bind(this),
-      notebookId, message, sourceIds,
-    );
-    if (result.threadId) this.chatThreadId = result.threadId;
-    this.chatHistory.push([message, null, 1]);
-    if (result.text) {
-      this.chatHistory.push([result.text, null, 2]);
+    return this.enqueueChat(notebookId, async () => {
+      const state = await this.ensureChatThread(notebookId);
+      const result = await api.sendChatWithCitations(
+        (id, text, sources) => this.callChatStreamWithState(state, id, text, sources),
+        notebookId, message, sourceIds,
+      );
+      this.recordChatTurn(state, message, result.text, result.threadId);
+      return result;
+    });
+  }
+
+  /**
+   * Binds local chat state to `notebookId`/`threadId` (called after createNotebook).
+   * Resets accumulated history and turn counter whenever the thread changes — the web UI's
+   * follow-up payload format requires history to start empty for a fresh thread.
+   */
+  private bindChatThread(notebookId: string, threadId: string): void {
+    const state = this.getChatState(notebookId);
+    if (state.threadId === threadId) return;
+    state.threadId = threadId;
+    state.history = [];
+    state.turnCounter = 0;
+  }
+
+  /**
+   * Resolves the notebook's default chat thread before sending a message.
+   * - If this notebook already has a thread, no-op.
+   * - Otherwise, fetch via `hPTbtc`. NotebookLM auto-allocates one default
+   *   thread per notebook on creation, so this should always succeed.
+   * - Empty result means the notebook is in an unusual state (no allocated
+   *   thread); we leave `threadId` empty and let the chat call create one
+   *   server-side as a best-effort fallback (only the first message will be
+   *   visible in UI, follow-ups won't persist — matches pre-fix behavior).
+   */
+  private async ensureChatThread(notebookId: string): Promise<ChatState> {
+    const state = this.getChatState(notebookId);
+    if (state.threadId) return state;
+    const threads = await api.listChatThreads(this.rpc, notebookId);
+    if (!state.threadId && threads.length > 0 && threads[0]) {
+      state.threadId = threads[0];
     }
-    return result;
+    return state;
+  }
+
+  private recordChatTurn(
+    state: ChatState,
+    message: string,
+    replyText: string,
+    replyThreadId: string,
+  ): void {
+    // Adopt the thread the server actually wrote to in case ensureChatThread
+    // came up empty and the server allocated one for us.
+    if (replyThreadId && !state.threadId) {
+      state.threadId = replyThreadId;
+    }
+    // Newest-first, with the assistant reply preceding the user prompt within
+    // each turn — this is the layout the web UI sends back on follow-ups.
+    state.history.unshift([message, null, 1]);
+    if (replyText) state.history.unshift([replyText, null, 2]);
+    state.turnCounter += 1;
+  }
+
+  private getChatState(notebookId: string): ChatState {
+    const existing = this.chatStates.get(notebookId);
+    if (existing) return existing;
+    const state: ChatState = {
+      threadId: '',
+      history: [],
+      turnCounter: 0,
+    };
+    this.chatStates.set(notebookId, state);
+    return state;
+  }
+
+  private async enqueueChat<T>(notebookId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.chatQueues.get(notebookId) ?? Promise.resolve();
+    let release: () => void = () => {};
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.chatQueues.set(notebookId, previous.then(() => current, () => current));
+
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.chatQueues.get(notebookId) === current) {
+        this.chatQueues.delete(notebookId);
+      }
+    }
   }
 
   async deleteChatThread(threadId: string): Promise<void> {

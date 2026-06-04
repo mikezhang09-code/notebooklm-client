@@ -315,7 +315,7 @@ client.getTransportMode()
 
 // Notebooks
 await client.listNotebooks()                          // → NotebookInfo[]
-await client.createNotebook()                         // → { notebookId }
+await client.createNotebook()                         // → { notebookId, threadId }
 await client.getNotebookDetail(notebookId)            // → { title, sources }
 await client.deleteNotebook(notebookId)
 
@@ -329,6 +329,7 @@ await client.deleteSource(sourceId)
 
 // Chat
 await client.sendChat(notebookId, message, sourceIds) // → { text, threadId }
+await client.listChatThreads(notebookId)              // → string[] (default thread is index 0)
 await client.deleteChatThread(threadId)
 
 // Studio (dynamic — always fetch types from server)
@@ -723,7 +724,7 @@ client.getTransportMode()
 
 // 笔记本
 await client.listNotebooks()                          // → NotebookInfo[]
-await client.createNotebook()                         // → { notebookId }
+await client.createNotebook()                         // → { notebookId, threadId }
 await client.getNotebookDetail(notebookId)            // → { title, sources }
 await client.deleteNotebook(notebookId)
 
@@ -737,6 +738,7 @@ await client.deleteSource(sourceId)
 
 // 对话
 await client.sendChat(notebookId, message, sourceIds) // → { text, threadId }
+await client.listChatThreads(notebookId)              // → string[]（首条是默认 thread）
 await client.deleteChatThread(threadId)
 
 // Studio（动态 —— 始终从服务端获取类型）
