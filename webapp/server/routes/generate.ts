@@ -9,7 +9,12 @@ import multer from 'multer';
 import { readdir, rename, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname } from 'node:path';
-import type { NotebookClient, SourceInput, WorkflowProgress } from 'notebooklm-client';
+import type {
+  NotebookClient,
+  SourceInput,
+  WorkflowProgress,
+  ArtifactGenerateOptions,
+} from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
 import { openSseStream } from '../lib/sse.js';
@@ -42,7 +47,33 @@ interface GenerateBody {
     researchMode?: 'fast' | 'deep';
     // file is supplied as a multipart field
   };
+  /** When set, generate into this existing notebook instead of a fresh one. */
+  notebookId?: string;
+  /** Subset of source IDs to use with `notebookId` (default: all sources). */
+  sourceIds?: string[];
   options?: Record<string, unknown>;
+}
+
+/** Map a webapp artifact `kind` + raw options to a library ArtifactGenerateOptions. */
+function buildArtifactOptions(kind: Kind, opt: Record<string, string | undefined>): ArtifactGenerateOptions {
+  switch (kind) {
+    case 'audio':
+      return { type: 'audio', language: opt.language as never, instructions: opt.instructions, format: opt.format as never, length: opt.length as never };
+    case 'report':
+      return { type: 'report', template: (opt.template ?? 'briefing_doc') as never, instructions: opt.instructions, language: opt.language };
+    case 'video':
+      return { type: 'video', format: opt.format as never, style: opt.style as never, instructions: opt.instructions, language: opt.language };
+    case 'quiz':
+      return { type: 'quiz', instructions: opt.instructions, language: opt.language, quantity: opt.quantity as never, difficulty: opt.difficulty as never };
+    case 'flashcards':
+      return { type: 'flashcards', instructions: opt.instructions, language: opt.language, quantity: opt.quantity as never, difficulty: opt.difficulty as never };
+    case 'infographic':
+      return { type: 'infographic', instructions: opt.instructions, language: opt.language, orientation: opt.orientation as never, detail: opt.detail as never, style: opt.style as never };
+    case 'slides':
+      return { type: 'slide_deck', instructions: opt.instructions, language: opt.language, format: opt.format as never, length: opt.length as never };
+    case 'data-table':
+      return { type: 'data_table', instructions: opt.instructions, language: opt.language };
+  }
 }
 
 function buildSource(body: GenerateBody, filePath: string | undefined): SourceInput {
@@ -219,16 +250,33 @@ generateRouter.post(
         body = (req.body ?? {}) as GenerateBody;
       }
 
-      const source = buildSource(body, file?.path);
       const job = await createJob();
 
-      stream.progress({ status: 'pending', message: `Starting ${kind} generation…` });
-
-      const output = await withClient({ session }, (client) =>
-        runWorkflow(client, kind, source, job.dir, body.options ?? {}, (p) => {
-          stream.progress(p);
-        }),
-      );
+      let output: WorkflowOutput;
+      if (body.notebookId) {
+        // ── Generate into an existing notebook (reuse its sources) ──
+        stream.progress({ status: 'pending', message: `Starting ${kind} generation…` });
+        const artifact = buildArtifactOptions(kind, (body.options ?? {}) as Record<string, string | undefined>);
+        output = await withClient({ session }, async (client) => {
+          const r = await client.runGenerateInNotebook(
+            { notebookId: body.notebookId!, sourceIds: body.sourceIds, artifact, outputDir: job.dir },
+            (p) => stream.progress(p),
+          );
+          return {
+            downloadPaths: r.files,
+            meta: { notebookUrl: r.notebookUrl, ...(r.streamUrl ? { streamUrl: r.streamUrl } : {}) },
+          };
+        });
+      } else {
+        // ── Create a fresh notebook from a supplied source ──
+        const source = buildSource(body, file?.path);
+        stream.progress({ status: 'pending', message: `Starting ${kind} generation…` });
+        output = await withClient({ session }, (client) =>
+          runWorkflow(client, kind, source, job.dir, body.options ?? {}, (p) => {
+            stream.progress(p);
+          }),
+        );
+      }
 
       // Enumerate actual files in the job dir (workflows can emit extras).
       const allFiles = await readdir(job.dir).catch(() => [] as string[]);

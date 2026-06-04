@@ -8,7 +8,7 @@ import { Command } from 'commander';
 import { NotebookClient } from './client.js';
 import type { TransportMode } from './client.js';
 import { setHomeDir } from './paths.js';
-import type { SourceInput, WorkflowProgress } from './types.js';
+import type { SourceInput, WorkflowProgress, ArtifactGenerateOptions } from './types.js';
 import { ARTIFACT_TYPE } from './rpc-ids.js';
 import { runSourceAdd, validateSourceAddOpts, type SourceAddOpts } from './commands/source-add.js';
 
@@ -58,7 +58,39 @@ function buildSource(opts: { url?: string; text?: string; file?: string; topic?:
   if (opts.text) return { type: 'text', text: opts.text };
   if (opts.file) return { type: 'file', filePath: opts.file };
   if (opts.topic) return { type: 'research', topic: opts.topic, researchMode: (opts.researchMode as 'fast' | 'deep') ?? 'fast' };
-  throw new Error('Must specify --url, --text, --file, or --topic');
+  throw new Error('Must specify --url, --text, --file, --topic, or --notebook-id');
+}
+
+/**
+ * Options for targeting an existing notebook instead of creating a fresh one.
+ * When `--notebook-id` is given, generate commands reuse that notebook's
+ * sources (all of them, or the subset named by `--source-ids`).
+ */
+function addExistingNotebookOptions(cmd: Command): Command {
+  return cmd
+    .option('--notebook-id <id>', 'Generate into an existing notebook (reuses its sources) instead of creating one from a source')
+    .option('--source-ids <ids>', 'Comma-separated source IDs to use with --notebook-id (default: all sources)');
+}
+
+/**
+ * Shared driver for the existing-notebook generation path. Prints written file
+ * paths to stdout (machine-readable) and notebook/stream info to stderr.
+ */
+async function runInExistingNotebook(
+  client: NotebookClient,
+  opts: { notebookId?: string; sourceIds?: string; output: string },
+  artifact: ArtifactGenerateOptions,
+): Promise<void> {
+  const sourceIds = opts.sourceIds
+    ? opts.sourceIds.split(',').map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  const result = await client.runGenerateInNotebook(
+    { notebookId: opts.notebookId!, sourceIds, artifact, outputDir: opts.output },
+    progressLogger,
+  );
+  for (const f of result.files) console.log(f);
+  if (result.streamUrl) console.error(`Stream: ${result.streamUrl}`);
+  console.error(`Notebook: ${result.notebookUrl}`);
 }
 
 async function withClient(
@@ -203,7 +235,7 @@ program.addCommand(refreshSessionCmd);
 const audioCmd = new Command('audio')
   .description('Generate an audio podcast from source material');
 
-addBrowserOptions(addSourceOptions(audioCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(audioCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('-l, --language <lang>', 'Audio language', 'en')
   .option('--custom-prompt <prompt>', 'Custom generation prompt (alias: --instructions)')
@@ -212,8 +244,18 @@ addBrowserOptions(addSourceOptions(audioCmd))
   .option('--length <len>', 'Audio length: short | default | long')
   .option('--keep-notebook', 'Do not delete the notebook after completion')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'audio',
+          language: opts.language,
+          instructions: opts.instructions ?? opts.customPrompt,
+          format: opts.format,
+          length: opts.length,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runAudioOverview(
         {
           source,
@@ -260,14 +302,23 @@ program.addCommand(analyzeCmd);
 const reportCmd = new Command('report')
   .description('Generate a report (briefing doc, study guide, blog post, or custom)');
 
-addBrowserOptions(addSourceOptions(reportCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(reportCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--template <t>', 'Report template: briefing_doc | study_guide | blog_post | custom', 'briefing_doc')
   .option('--instructions <text>', 'Custom instructions (appended to template, or full prompt for custom)')
   .option('-l, --language <lang>', 'Output language', 'en')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'report',
+          template: opts.template,
+          instructions: opts.instructions,
+          language: opts.language,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runReport(
         {
           source,
@@ -290,15 +341,25 @@ program.addCommand(reportCmd);
 const videoCmd = new Command('video')
   .description('Generate a video overview');
 
-addBrowserOptions(addSourceOptions(videoCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(videoCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--format <fmt>', 'Video format: explainer | brief | cinematic')
   .option('--style <s>', 'Video style: auto | classic | whiteboard | kawaii | anime | watercolor | retro_print')
   .option('--instructions <text>', 'Custom instructions')
   .option('-l, --language <lang>', 'Output language', 'en')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'video',
+          format: opts.format,
+          style: opts.style,
+          instructions: opts.instructions,
+          language: opts.language,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runVideo(
         {
           source,
@@ -322,15 +383,25 @@ program.addCommand(videoCmd);
 const quizCmd = new Command('quiz')
   .description('Generate a quiz');
 
-addBrowserOptions(addSourceOptions(quizCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(quizCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--instructions <text>', 'Custom instructions')
   .option('-l, --language <lang>', 'Output language', 'en')
   .option('--quantity <q>', 'Quiz quantity: fewer | standard')
   .option('--difficulty <d>', 'Quiz difficulty: easy | medium | hard')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'quiz',
+          instructions: opts.instructions,
+          language: opts.language,
+          quantity: opts.quantity,
+          difficulty: opts.difficulty,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runQuiz(
         {
           source,
@@ -354,15 +425,25 @@ program.addCommand(quizCmd);
 const flashcardsCmd = new Command('flashcards')
   .description('Generate flashcards');
 
-addBrowserOptions(addSourceOptions(flashcardsCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(flashcardsCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--instructions <text>', 'Custom instructions')
   .option('-l, --language <lang>', 'Output language', 'en')
   .option('--quantity <q>', 'Flashcard quantity: fewer | standard')
   .option('--difficulty <d>', 'Flashcard difficulty: easy | medium | hard')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'flashcards',
+          instructions: opts.instructions,
+          language: opts.language,
+          quantity: opts.quantity,
+          difficulty: opts.difficulty,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runFlashcards(
         {
           source,
@@ -386,7 +467,7 @@ program.addCommand(flashcardsCmd);
 const infographicCmd = new Command('infographic')
   .description('Generate an infographic');
 
-addBrowserOptions(addSourceOptions(infographicCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(infographicCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--instructions <text>', 'Custom instructions')
   .option('-l, --language <lang>', 'Output language', 'en')
@@ -394,8 +475,19 @@ addBrowserOptions(addSourceOptions(infographicCmd))
   .option('--detail <d>', 'Detail level: concise | standard | detailed')
   .option('--style <s>', 'Style: sketch_note | professional | bento_grid')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'infographic',
+          instructions: opts.instructions,
+          language: opts.language,
+          orientation: opts.orientation,
+          detail: opts.detail,
+          style: opts.style,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runInfographic(
         {
           source,
@@ -420,15 +512,25 @@ program.addCommand(infographicCmd);
 const slidesCmd = new Command('slides')
   .description('Generate a slide deck');
 
-addBrowserOptions(addSourceOptions(slidesCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(slidesCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--instructions <text>', 'Custom instructions')
   .option('-l, --language <lang>', 'Output language', 'en')
   .option('--format <fmt>', 'Slide format: detailed | presenter')
   .option('--length <len>', 'Slide length: default | short')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'slide_deck',
+          instructions: opts.instructions,
+          language: opts.language,
+          format: opts.format,
+          length: opts.length,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runSlideDeck(
         {
           source,
@@ -453,13 +555,21 @@ program.addCommand(slidesCmd);
 const dataTableCmd = new Command('data-table')
   .description('Generate a data table');
 
-addBrowserOptions(addSourceOptions(dataTableCmd))
+addExistingNotebookOptions(addBrowserOptions(addSourceOptions(dataTableCmd)))
   .requiredOption('-o, --output <dir>', 'Output directory')
   .option('--instructions <text>', 'Custom instructions (describe desired table structure)')
   .option('-l, --language <lang>', 'Output language', 'en')
   .action(async (opts) => {
-    const source = buildSource(opts);
     await withClient(opts, async (client) => {
+      if (opts.notebookId) {
+        await runInExistingNotebook(client, opts, {
+          type: 'data_table',
+          instructions: opts.instructions,
+          language: opts.language,
+        });
+        return;
+      }
+      const source = buildSource(opts);
       const result = await client.runDataTable(
         {
           source,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiFormData, apiGet, apiJson } from '../lib/api';
+import GenerateInNotebookPanel from '../components/GenerateInNotebookPanel';
 
 interface SourceInfo {
   id: string;
@@ -265,6 +266,14 @@ export default function NotebookDetailPage() {
           </div>
         </form>
       </div>
+
+      {detail && (
+        <GenerateInNotebookPanel
+          notebookId={id}
+          sources={detail.sources.map((s) => ({ id: s.id, title: s.title }))}
+          onGenerated={() => void reload()}
+        />
+      )}
 
       {detail?.artifacts && detail.artifacts.length > 0 && (
         <div className="card">

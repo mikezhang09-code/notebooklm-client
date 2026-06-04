@@ -43,6 +43,8 @@ import type {
   SlideDeckResult,
   DataTableOptions,
   DataTableResult,
+  GenerateInNotebookOptions,
+  GenerateInNotebookResult,
 } from './types.js';
 
 // ── Source helpers ──
@@ -476,6 +478,57 @@ export async function runSlideDeck(
 
   onProgress?.({ status: 'completed', message: 'Slide deck complete!' });
   return { pptxPath, pdfPath, notebookUrl: `${NB_URLS.BASE}/notebook/${notebookId}` };
+}
+
+/**
+ * Generate an artifact inside an existing notebook, reusing its sources —
+ * the counterpart to the `run*` workflows that always create a fresh notebook.
+ *
+ * Resolves `sourceIds` to every source in the notebook when omitted, generates
+ * the requested artifact, polls until ready, then downloads it via the same
+ * per-type save logic used by `downloadArtifact`. Mind-maps are unsupported
+ * here (they require a real browser); use the NotebookLM UI for those.
+ */
+export async function runGenerateInNotebook(
+  client: NotebookClient,
+  options: GenerateInNotebookOptions,
+  onProgress?: (p: WorkflowProgress) => void,
+): Promise<GenerateInNotebookResult> {
+  client.ensureConnected();
+
+  const { notebookId, artifact, outputDir } = options;
+
+  let sourceIds = options.sourceIds;
+  if (!sourceIds || sourceIds.length === 0) {
+    onProgress?.({ status: 'configuring', message: 'Resolving notebook sources...' });
+    const detail = await client.getNotebookDetail(notebookId);
+    sourceIds = detail.sources.map((s) => s.id);
+  }
+  if (sourceIds.length === 0) {
+    throw new Error('Notebook has no sources to generate from. Add a source first.');
+  }
+
+  onProgress?.({ status: 'generating', message: `Generating ${artifact.type}...` });
+  const { artifactId } = await client.generateArtifact(notebookId, sourceIds, artifact);
+
+  // Media (audio/video) renders far slower than text artifacts.
+  const isMedia = artifact.type === 'audio' || artifact.type === 'video';
+  const timeoutMs = isMedia ? 1_800_000 : 300_000;
+  onProgress?.({ status: 'generating', message: `Waiting for ${artifact.type} generation...` });
+  const ready = await pollArtifactReady(client, notebookId, artifactId, timeoutMs);
+
+  onProgress?.({ status: 'downloading', message: 'Downloading artifact...' });
+  const dl = await client.downloadArtifact(notebookId, ready.id, outputDir);
+
+  onProgress?.({ status: 'completed', message: 'Generation complete!' });
+  return {
+    artifactId: ready.id,
+    type: dl.type,
+    typeLabel: dl.typeLabel,
+    files: dl.files,
+    ...(dl.streamUrl ? { streamUrl: dl.streamUrl } : {}),
+    notebookUrl: `${NB_URLS.BASE}/notebook/${notebookId}`,
+  };
 }
 
 export async function runDataTable(

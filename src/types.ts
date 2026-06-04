@@ -228,6 +228,20 @@ export interface ChatOptions {
   message: string;
 }
 
+/**
+ * Options for generating an artifact inside an existing notebook, rather than
+ * creating a fresh notebook from a source. Reuses the notebook's existing
+ * sources (all of them by default, or a subset via `sourceIds`).
+ */
+export interface GenerateInNotebookOptions {
+  notebookId: string;
+  /** Source IDs to base generation on. Defaults to every source in the notebook. */
+  sourceIds?: string[];
+  /** The artifact to generate, discriminated by `type`. */
+  artifact: ArtifactGenerateOptions;
+  outputDir: string;
+}
+
 // ── Results ──
 
 export interface AudioOverviewResult {
@@ -279,6 +293,20 @@ export interface DataTableResult {
 
 export interface AnalyzeResult {
   answer: string;
+  notebookUrl: string;
+}
+
+/** Result of generating an artifact inside an existing notebook. */
+export interface GenerateInNotebookResult {
+  artifactId: string;
+  /** Numeric artifact type (see ARTIFACT_TYPE). */
+  type: number;
+  /** Human-readable artifact type label (e.g. "audio", "slides"). */
+  typeLabel: string;
+  /** Absolute paths of files written to `outputDir`. */
+  files: string[];
+  /** Stream URL for video artifacts that have no direct download. */
+  streamUrl?: string;
   notebookUrl: string;
 }
 

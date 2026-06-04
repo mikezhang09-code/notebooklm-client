@@ -40,6 +40,7 @@ import {
   runInfographic as _runInfographic,
   runSlideDeck as _runSlideDeck,
   runDataTable as _runDataTable,
+  runGenerateInNotebook as _runGenerateInNotebook,
 } from './workflows.js';
 import type {
   NotebookSession,
@@ -77,6 +78,8 @@ import type {
   SlideDeckResult,
   DataTableOptions,
   DataTableResult,
+  GenerateInNotebookOptions,
+  GenerateInNotebookResult,
   ChatWithCitationsResult,
 } from './types.js';
 
@@ -838,5 +841,16 @@ export class NotebookClient {
 
   async runDataTable(options: DataTableOptions, onProgress?: (p: WorkflowProgress) => void): Promise<DataTableResult> {
     return _runDataTable(this, options, onProgress);
+  }
+
+  /**
+   * Generate an artifact inside an existing notebook (reusing its sources),
+   * instead of creating a fresh notebook from a new source.
+   */
+  async runGenerateInNotebook(
+    options: GenerateInNotebookOptions,
+    onProgress?: (p: WorkflowProgress) => void,
+  ): Promise<GenerateInNotebookResult> {
+    return _runGenerateInNotebook(this, options, onProgress);
   }
 }
