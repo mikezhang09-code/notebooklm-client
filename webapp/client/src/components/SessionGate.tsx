@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { saveSession } from '../lib/session-store';
 import type { StoredSession } from '../lib/session-store';
 import { apiJson } from '../lib/api';
+import { Icon } from './Icon';
 
 interface Props {
   onSession: () => void;
@@ -88,84 +89,85 @@ export default function SessionGate({ onSession }: Props) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-brand-50 p-6">
-      <div className="w-full max-w-2xl">
-        <div className="mb-6 text-center">
-          <h1 className="text-3xl font-bold text-brand-700">NotebookLM GUI</h1>
-          <p className="mt-2 text-slate-600">
-            A friendly web interface for <code>notebooklm-client</code>. Bring your own session.
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'grid',
+        placeItems: 'center',
+        padding: 24,
+        background: 'var(--bg)',
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: 560 }}>
+        <div className="view-head" style={{ textAlign: 'center' }}>
+          <div className="view-title" style={{ justifyContent: 'center' }}>
+            <h1>
+              Notebook<span style={{ fontFamily: 'Newsreader, serif', fontStyle: 'italic', fontWeight: 500, color: 'var(--accent)' }}>Hub</span>
+            </h1>
+          </div>
+          <p className="view-sub" style={{ margin: '8px auto 0' }}>
+            A calm workspace for <code>notebooklm-client</code>. Bring your own session.
           </p>
         </div>
 
-        <div className="card space-y-4">
-          <h2 className="text-lg font-semibold text-slate-800">Import your session</h2>
-          <ol className="ml-5 list-decimal space-y-1 text-sm text-slate-600">
-            <li>
-              On your own machine, run:{' '}
-              <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px]">
-                npx notebooklm export-session
-              </code>
-            </li>
-            <li>
-              Click <strong>Load from disk</strong> below, or paste the session JSON manually.
-            </li>
-          </ol>
+        <div className="set-card" style={{ maxWidth: 'none' }}>
+          <h3>Import your session</h3>
+          <p className="s-d">
+            On your machine run <code>npx notebooklm export-session</code>, then load it below.
+          </p>
 
-          {/* Quick-load button */}
           <button
             type="button"
-            className="btn-primary w-full"
+            className="btn btn-primary"
+            style={{ width: '100%', justifyContent: 'center' }}
             disabled={busy}
             onClick={handleLoadFromDisk}
           >
-            {busy ? 'Loading…' : '⚡ Load from disk (auto-detect session.json)'}
+            <Icon id="i-download" />
+            {busy ? 'Loading…' : 'Load from disk (auto-detect session.json)'}
           </button>
 
-          <div className="relative text-center text-xs text-slate-400">
-            <span className="relative z-10 bg-white px-2">or paste manually</span>
-            <div className="absolute inset-x-0 top-1/2 border-t border-slate-200" />
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div>
-              <label className="label">Session JSON</label>
+          <form onSubmit={handleSubmit} style={{ marginTop: 16 }}>
+            <div className="field">
+              <label>Session JSON</label>
               <textarea
-                className="input h-40 font-mono text-xs"
+                className="input"
+                style={{ minHeight: 150, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
                 placeholder='{"at":"...","bl":"...","fsid":"...","cookies":"...","userAgent":"..."}'
                 value={raw}
                 onChange={(e) => setRaw(e.target.value)}
                 disabled={busy}
               />
             </div>
-            <div className="flex flex-wrap items-center gap-3">
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
               <input
                 type="file"
                 accept="application/json,.json,.txt"
                 onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
-                className="text-sm"
+                style={{ fontSize: 13, color: 'var(--muted)' }}
                 disabled={busy}
               />
-              <div className="flex-1" />
-              <button type="submit" className="btn-primary" disabled={busy || !raw.trim()}>
+              <div style={{ flex: 1 }} />
+              <button type="submit" className="btn btn-primary" disabled={busy || !raw.trim()}>
                 {busy ? 'Verifying…' : 'Verify & save'}
               </button>
             </div>
             {error && (
-              <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              <p className="hint" style={{ color: 'var(--accent)', marginTop: 12 }}>
                 {error}
-              </div>
+              </p>
             )}
             {info && (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              <p className="hint" style={{ color: '#5f8a5a', marginTop: 12 }}>
                 {info}
-              </div>
+              </p>
             )}
           </form>
 
-          <div className="border-t border-slate-200 pt-3 text-xs text-slate-500">
-            Your session is stored only in this browser's <code>localStorage</code>. It is sent with
-            each request in an <code>X-NBLM-Session</code> header and never persisted on the server.
-          </div>
+          <p className="s-d" style={{ marginTop: 16, marginBottom: 0 }}>
+            Stored only in this browser's <code>localStorage</code>; sent per-request in an{' '}
+            <code>X-NBLM-Session</code> header, never persisted on the server.
+          </p>
         </div>
       </div>
     </div>

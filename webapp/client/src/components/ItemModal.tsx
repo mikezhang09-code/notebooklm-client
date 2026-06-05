@@ -1,0 +1,132 @@
+/**
+ * Item detail modal — type-colored cover + key/value facts + actions
+ * (Open / Download / Share / Delete). Fetches a fresh PAR download URL.
+ */
+import { useEffect, useState } from 'react';
+import { Icon } from './Icon';
+import { TYPE } from '../lib/registry';
+import { SOURCES } from '../lib/registry';
+import { getDownloadUrl, deleteItem, shareItem, type Item } from '../lib/artifacts';
+import { toast } from '../lib/toast';
+
+function fmtSize(b: number | null): string {
+  if (!b) return '—';
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export default function ItemModal({
+  item,
+  onClose,
+  onDeleted,
+}: {
+  item: Item;
+  onClose: () => void;
+  onDeleted?: () => void;
+}) {
+  const t = TYPE[item.typeKey] ?? TYPE.report;
+  const src = SOURCES[item.provenance];
+  const [downloadUrl, setDownloadUrl] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getDownloadUrl(item.id).then(setDownloadUrl).catch(() => setDownloadUrl(undefined));
+  }, [item.id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function handleDelete() {
+    if (!confirm(`Delete "${item.title}"? This removes it from the library.`)) return;
+    setBusy(true);
+    try {
+      await deleteItem(item.id);
+      toast('Deleted');
+      onDeleted?.();
+      onClose();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleShare() {
+    try {
+      const url = await shareItem(item.id);
+      await navigator.clipboard.writeText(url).catch(() => {});
+      toast('Share link copied');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <div
+      className="modal-root show"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      style={{ '--tc': t.color } as React.CSSProperties}
+    >
+      <div className="modal">
+        <div className="modal-cover">
+          <div className="pat" />
+          <span className="big">
+            <Icon id={t.icon} />
+          </span>
+          <button className="icon-btn x" onClick={onClose}>
+            <Icon id="i-close" />
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="m-type">{t.label}</div>
+          <h2>{item.title}</h2>
+          <span className={`prov p-${item.provenance}`} style={{ marginTop: 12, display: 'inline-flex' }}>
+            <Icon id={src.icon} /> {src.label}
+          </span>
+          <dl className="kv">
+            <dt>Type</dt>
+            <dd>{t.label}</dd>
+            <dt>Source</dt>
+            <dd>{src.label}</dd>
+            <dt>From</dt>
+            <dd>{item.from ?? '—'}</dd>
+            <dt>Created</dt>
+            <dd>{new Date(item.createdAt).toLocaleString()}</dd>
+            <dt>Size</dt>
+            <dd>{fmtSize(item.sizeBytes)}</dd>
+          </dl>
+        </div>
+        <div className="modal-foot">
+          <a
+            className="btn btn-primary"
+            href={downloadUrl ?? '#'}
+            target="_blank"
+            rel="noreferrer"
+            aria-disabled={!downloadUrl}
+            onClick={(e) => !downloadUrl && e.preventDefault()}
+          >
+            <Icon id="i-ext" /> Open
+          </a>
+          <a
+            className="btn btn-soft"
+            href={downloadUrl ?? '#'}
+            download
+            onClick={(e) => !downloadUrl && e.preventDefault()}
+          >
+            <Icon id="i-download" /> Download
+          </a>
+          <button className="btn btn-soft" onClick={handleShare}>
+            <Icon id="i-share" /> Share
+          </button>
+          <button className="btn btn-soft" style={{ marginLeft: 'auto', color: 'var(--accent)' }} disabled={busy} onClick={handleDelete}>
+            <Icon id="i-trash" /> Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

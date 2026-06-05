@@ -1,0 +1,181 @@
+/**
+ * Free Forms · single type — a table of all items of one output type, with a
+ * provenance filter (All / NotebookLM / Collections / Free form) and the item
+ * detail modal. Wired to GET /api/corpus/artifacts?kind=…
+ */
+import { useEffect, useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { Icon } from '../../components/Icon';
+import ItemModal from '../../components/ItemModal';
+import { CreateChooser } from '../../components/CreateFlow';
+import UploadDrawer from '../../components/UploadDrawer';
+import { TYPE, SOURCES, type TypeKey } from '../../lib/registry';
+import { listItems, type Item, type Provenance } from '../../lib/artifacts';
+import { toast } from '../../lib/toast';
+
+type Filter = 'all' | Provenance;
+const FILTERS: { key: Filter; label: string; dot?: string }[] = [
+  { key: 'all', label: 'All sources' },
+  { key: 'notebooklm', label: 'NotebookLM', dot: SOURCES.notebooklm.color },
+  { key: 'personal', label: 'Collections', dot: SOURCES.personal.color },
+  { key: 'standalone', label: 'Free form', dot: SOURCES.standalone.color },
+];
+
+function fmtSize(b: number | null): string {
+  if (!b) return '—';
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export default function FreeFormTypePage() {
+  const { type } = useParams<{ type: string }>();
+  const typeKey = (type ?? 'audio') as TypeKey;
+  const t = TYPE[typeKey] ?? TYPE.report;
+
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>('all');
+  const [open, setOpen] = useState<Item | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  async function reload() {
+    setLoading(true);
+    setError(null);
+    try {
+      const { items } = await listItems({ kind: t.ingestKind, limit: 200 });
+      setItems(items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void reload();
+  }, [typeKey]);
+
+  const counts = useMemo(() => {
+    const c: Record<Filter, number> = { all: items.length, notebooklm: 0, personal: 0, standalone: 0 };
+    for (const it of items) c[it.provenance]++;
+    return c;
+  }, [items]);
+
+  const rows = filter === 'all' ? items : items.filter((it) => it.provenance === filter);
+
+  return (
+    <div className="content" style={{ '--tc': t.color } as React.CSSProperties}>
+      <div className="view-head">
+        <div className="head-row">
+          <div>
+            <div className="view-eyebrow">
+              <span className="pip" style={{ background: t.color }} />
+              Free Forms · {t.plural}
+            </div>
+            <div className="view-title">
+              <span className="t-ic" style={{ width: 42, height: 42 }}>
+                <Icon id={t.icon} />
+              </span>
+              <h1>{t.plural}</h1>
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={() => setChoosing(true)}>
+            <Icon id="i-plus" />
+            New {t.label.toLowerCase()}
+          </button>
+        </div>
+      </div>
+
+      <div className="chips" style={{ marginBottom: 16 }}>
+        {FILTERS.map((f) => (
+          <button
+            key={f.key}
+            className={`chip${filter === f.key ? ' on' : ''}`}
+            onClick={() => setFilter(f.key)}
+          >
+            {f.dot && <span className="c-dot" style={{ background: f.dot }} />}
+            {f.label}
+            <span className="c-x">{counts[f.key]}</span>
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="empty" style={{ color: 'var(--accent)' }}>{error}</div>}
+
+      {!loading && rows.length === 0 ? (
+        <div className="empty">
+          <Icon id={t.icon} />
+          <p>No {t.plural.toLowerCase()} yet.</p>
+        </div>
+      ) : (
+        <div className="ff-table">
+          <div className="fft-head">
+            <span>Name</span>
+            <span>Source</span>
+            <span>From</span>
+            <span>Details</span>
+            <span>Created</span>
+            <span style={{ textAlign: 'right' }}>Actions</span>
+          </div>
+          {rows.map((it) => {
+            const src = SOURCES[it.provenance];
+            return (
+              <div key={it.id} className="fft-row" onClick={() => setOpen(it)}>
+                <div className="fft-name">
+                  <span className="t-ic" style={{ width: 32, height: 32 }}>
+                    <Icon id={t.icon} />
+                  </span>
+                  <span className="fft-nm">{it.title}</span>
+                </div>
+                <span>
+                  <span className={`prov p-${it.provenance}`}>
+                    <Icon id={src.icon} /> {src.label}
+                  </span>
+                </span>
+                <span className="fft-from">{it.from ?? '—'}</span>
+                <span className="fft-mono">{fmtSize(it.sizeBytes)}</span>
+                <span className="fft-date">{new Date(it.createdAt).toLocaleDateString()}</span>
+                <div className="fft-act" onClick={(e) => e.stopPropagation()}>
+                  <button className="icon-btn" onClick={() => setOpen(it)}>
+                    <Icon id="i-ext" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {loading && <div className="empty">Loading…</div>}
+
+      {open && <ItemModal item={open} onClose={() => setOpen(null)} onDeleted={reload} />}
+
+      {choosing && (
+        <CreateChooser
+          typeKey={typeKey}
+          onClose={() => setChoosing(false)}
+          onUpload={() => {
+            setChoosing(false);
+            setUploading(true);
+          }}
+          onGenerate={() => {
+            setChoosing(false);
+            toast('Generate from inside a notebook (Library → NotebookLM)');
+          }}
+        />
+      )}
+      {uploading && (
+        <UploadDrawer
+          typeKey={typeKey}
+          onClose={() => setUploading(false)}
+          onUploaded={() => {
+            setUploading(false);
+            void reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}

@@ -1,198 +1,43 @@
-import { useEffect, useState } from 'react';
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { hasSession, clearSession } from './lib/session-store';
-import { getCorpusHealth } from './lib/corpus';
+import { useState } from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import { hasSession } from './lib/session-store';
+import { IconSprite } from './components/Icon';
+import { ToastHost } from './lib/toast';
 import SessionGate from './components/SessionGate';
-import SessionPage from './pages/SessionPage';
-import NotebooksPage from './pages/NotebooksPage';
-import NotebookDetailPage from './pages/NotebookDetailPage';
-import GeneratePage from './pages/GeneratePage';
-import AnalyzePage from './pages/AnalyzePage';
-import ChatPage from './pages/ChatPage';
-import DiagnosePage from './pages/DiagnosePage';
-import CorpusPage from './pages/CorpusPage';
-import CorpusUploadPage from './pages/CorpusUploadPage';
-import CorpusLibraryPage from './pages/CorpusLibraryPage';
-import CorpusChatPage from './pages/CorpusChatPage';
-
-interface NavItem {
-  to: string;
-  label: string;
-  group: string;
-}
-
-const NAV: NavItem[] = [
-  { to: '/library', label: 'Notebooks', group: 'Library' },
-  { to: '/generate/audio', label: 'Audio podcast', group: 'Generate' },
-  { to: '/generate/report', label: 'Report', group: 'Generate' },
-  { to: '/generate/video', label: 'Video', group: 'Generate' },
-  { to: '/generate/quiz', label: 'Quiz', group: 'Generate' },
-  { to: '/generate/flashcards', label: 'Flashcards', group: 'Generate' },
-  { to: '/generate/infographic', label: 'Infographic', group: 'Generate' },
-  { to: '/generate/slides', label: 'Slides', group: 'Generate' },
-  { to: '/generate/data-table', label: 'Data table', group: 'Generate' },
-  { to: '/analyze', label: 'Analyze', group: 'Ask' },
-  { to: '/chat', label: 'Chat', group: 'Ask' },
-  { to: '/session', label: 'Session', group: 'Settings' },
-  { to: '/diagnose', label: 'Diagnose', group: 'Settings' },
-];
-
-function groupBy(items: NavItem[]): Record<string, NavItem[]> {
-  const out: Record<string, NavItem[]> = {};
-  for (const item of items) {
-    out[item.group] ??= [];
-    out[item.group].push(item);
-  }
-  return out;
-}
+import AppShell from './components/AppShell';
+import NotebookLMPage from './pages/nh/NotebookLMPage';
+import NotebookDetailPage from './pages/nh/NotebookDetailPage';
+import CollectionsPage from './pages/nh/CollectionsPage';
+import CollectionDetailPage from './pages/nh/CollectionDetailPage';
+import FreeFormsOverviewPage from './pages/nh/FreeFormsOverviewPage';
+import FreeFormTypePage from './pages/nh/FreeFormTypePage';
+import SettingsPage from './pages/nh/SettingsPage';
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(hasSession());
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [corpusEnabled, setCorpusEnabled] = useState<boolean>(false);
-  // Chat is gated separately because it needs OCI_GENAI_CHAT_MODEL on top
-  // of the rest of the corpus stack — we still want the search/library/upload
-  // entries even when the chat model isn't configured.
-  const [chatEnabled, setChatEnabled] = useState<boolean>(false);
-  const location = useLocation();
-
-  useEffect(() => {
-    setMobileNavOpen(false);
-  }, [location.pathname]);
-
-  // Probe corpus health once after auth — gates the Corpus nav entry.
-  useEffect(() => {
-    if (!authed) return;
-    let cancelled = false;
-    getCorpusHealth()
-      .then((h) => {
-        if (!cancelled) {
-          setCorpusEnabled(Boolean(h.enabled));
-          setChatEnabled(Boolean(h.chat?.enabled));
-        }
-      })
-      .catch(() => {
-        // Silently treat probe failure as "disabled" — keeps the rest of
-        // the app fully functional even if the corpus stack is offline.
-        if (!cancelled) {
-          setCorpusEnabled(false);
-          setChatEnabled(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [authed]);
-
-  if (!authed) {
-    return <SessionGate onSession={() => setAuthed(true)} />;
-  }
-
-  const navItems = corpusEnabled
-    ? [
-        ...NAV,
-        { to: '/corpus', label: 'Search', group: 'Research' },
-        ...(chatEnabled
-          ? [{ to: '/corpus/chat', label: 'Chat', group: 'Research' }]
-          : []),
-        { to: '/corpus/library', label: 'Library', group: 'Research' },
-        { to: '/corpus/upload', label: 'Upload', group: 'Research' },
-      ]
-    : NAV;
-  const groups = groupBy(navItems);
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
-      {/* Sidebar */}
-      <aside
-        className={`fixed inset-y-0 left-0 z-30 w-64 transform border-r border-slate-200 bg-white transition-transform md:static md:translate-x-0 ${
-          mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
-        }`}
-      >
-        <div className="flex h-14 items-center border-b border-slate-200 px-4">
-          <span className="text-lg font-semibold text-brand-700">NotebookLM GUI</span>
-        </div>
-        <nav className="space-y-6 px-3 py-4 text-sm">
-          {Object.entries(groups).map(([group, items]) => (
-            <div key={group}>
-              <div className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                {group}
-              </div>
-              <ul className="space-y-0.5">
-                {items.map((item) => (
-                  <li key={item.to}>
-                    <NavLink
-                      to={item.to}
-                      className={({ isActive }) =>
-                        `block rounded-md px-2 py-1.5 ${
-                          isActive
-                            ? 'bg-brand-50 text-brand-700'
-                            : 'text-slate-700 hover:bg-slate-100'
-                        }`
-                      }
-                    >
-                      {item.label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          <div className="pt-2">
-            <button
-              type="button"
-              className="btn-ghost w-full justify-start text-rose-600 hover:bg-rose-50"
-              onClick={() => {
-                if (confirm('Clear the saved session from this browser?')) {
-                  clearSession();
-                  setAuthed(false);
-                }
-              }}
-            >
-              Sign out (clear session)
-            </button>
-          </div>
-        </nav>
-      </aside>
-
-      {/* Main */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 md:hidden">
-          <span className="font-semibold text-brand-700">NotebookLM GUI</span>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setMobileNavOpen((v) => !v)}
-          >
-            Menu
-          </button>
-        </header>
-        <main className="flex-1 p-4 md:p-8">
-          <Routes>
-            <Route path="/" element={<Navigate to="/library" replace />} />
-            <Route path="/library" element={<NotebooksPage />} />
-            <Route path="/library/:id" element={<NotebookDetailPage />} />
-            <Route path="/generate/:kind" element={<GeneratePage />} />
-            <Route path="/analyze" element={<AnalyzePage />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/chat/:id" element={<ChatPage />} />
-            <Route path="/session" element={<SessionPage />} />
-            <Route path="/diagnose" element={<DiagnosePage />} />
-            {corpusEnabled && (
-              <>
-                <Route path="/corpus" element={<CorpusPage />} />
-                <Route path="/corpus/library" element={<CorpusLibraryPage />} />
-                <Route path="/corpus/upload" element={<CorpusUploadPage />} />
-                {/* Chat route is registered when the corpus is enabled even
-                    if the chat model isn't — the page itself surfaces a
-                    helpful "set OCI_GENAI_CHAT_MODEL" message in that case. */}
-                <Route path="/corpus/chat" element={<CorpusChatPage />} />
-              </>
-            )}
-            <Route path="*" element={<Navigate to="/library" replace />} />
-          </Routes>
-        </main>
-      </div>
-    </div>
+    <>
+      <IconSprite />
+      <ToastHost />
+      {!authed ? (
+        <SessionGate onSession={() => setAuthed(true)} />
+      ) : (
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/" element={<Navigate to="/notebooklm" replace />} />
+            <Route path="/notebooklm" element={<NotebookLMPage />} />
+            <Route path="/notebooklm/:id" element={<NotebookDetailPage />} />
+            <Route path="/collections" element={<CollectionsPage />} />
+            <Route path="/collections/:id" element={<CollectionDetailPage />} />
+            <Route path="/free-forms" element={<FreeFormsOverviewPage />} />
+            <Route path="/free-forms/:type" element={<FreeFormTypePage />} />
+            <Route path="/settings/session" element={<SettingsPage tab="session" />} />
+            <Route path="/settings/diagnose" element={<SettingsPage tab="diagnose" />} />
+            <Route path="*" element={<Navigate to="/notebooklm" replace />} />
+          </Route>
+        </Routes>
+      )}
+    </>
   );
 }
