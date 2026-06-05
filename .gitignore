@@ -30,4 +30,5 @@ Thumbs.db
 .env.local
 .env.*.local
 *.env
+.env.backup
 
