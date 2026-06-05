@@ -44,6 +44,8 @@ export interface IngestInput {
   filename?: string;
   notebookId?: string;
   artifactId?: string;
+  /** Optional collection to file this upload under (NULL = free-form). */
+  collectionId?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
 }
@@ -220,11 +222,11 @@ export async function ingestArtifactWith(
 
     await conn.execute(
       `INSERT INTO artifacts
-         (id, kind, origin, title, notebook_id, artifact_id,
+         (id, kind, origin, title, notebook_id, artifact_id, collection_id,
           bucket, object_name, mime_type, size_bytes, tags, metadata,
           transcription_status)
        VALUES
-         (:a_id, :a_kind, :a_origin, :a_title, :a_nb, :a_aid,
+         (:a_id, :a_kind, :a_origin, :a_title, :a_nb, :a_aid, :a_col,
           :a_bucket, :a_obj, :a_mime, :a_sz, :a_tags, :a_meta,
           :a_trx)`,
       {
@@ -234,6 +236,7 @@ export async function ingestArtifactWith(
         a_title: input.title.slice(0, 512),
         a_nb: input.notebookId ?? null,
         a_aid: input.artifactId ?? null,
+        a_col: input.collectionId ?? null,
         a_bucket: cfg.ociBucket,
         a_obj: objectName,
         a_mime: input.mimeType ?? null,

@@ -38,6 +38,13 @@ import {
   type ArtifactOrigin,
   type SavedChatTurn,
 } from '../corpus/ingest.js';
+import {
+  listCollections,
+  createCollection,
+  getCollection,
+  updateCollection,
+  deleteCollection,
+} from '../corpus/collections.js';
 
 export const corpusRouter = Router();
 
@@ -227,10 +234,132 @@ corpusRouter.post(
       filename: file.originalname,
       notebookId: body['notebookId'] || undefined,
       artifactId: body['artifactId'] || undefined,
+      collectionId: body['collectionId'] || undefined,
       tags,
       metadata,
     });
     res.status(201).json(result);
+  }),
+);
+
+// ───────────────────────────────────────────────────────────── collections ──
+
+/** GET /api/corpus/collections — list with item counts + per-kind breakdown. */
+corpusRouter.get(
+  '/collections',
+  asyncHandler(async (_req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    res.json({ collections: await listCollections(cfg) });
+  }),
+);
+
+/** POST /api/corpus/collections — create { name, description?, tags? }. */
+corpusRouter.post(
+  '/collections',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as { name?: unknown; description?: unknown; tags?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 256) {
+      res.status(400).json({ error: 'name is required (1..256 chars)' });
+      return;
+    }
+    const tags = Array.isArray(body.tags)
+      ? body.tags.filter((t): t is string => typeof t === 'string')
+      : undefined;
+    try {
+      const created = await createCollection(cfg, {
+        name,
+        description: typeof body.description === 'string' ? body.description : undefined,
+        tags,
+      });
+      res.status(201).json(created);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/ORA-00001/.test(msg)) {
+        res.status(409).json({ error: `a collection named "${name}" already exists` });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+/** GET /api/corpus/collections/:id — detail + files. */
+corpusRouter.get(
+  '/collections/:id',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const detail = await getCollection(cfg, req.params['id']);
+    if (!detail) {
+      res.status(404).json({ error: 'collection not found' });
+      return;
+    }
+    res.json(detail);
+  }),
+);
+
+/** PATCH /api/corpus/collections/:id — { name?, description?, tags? }. */
+corpusRouter.patch(
+  '/collections/:id',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as { name?: unknown; description?: unknown; tags?: unknown };
+    try {
+      const ok = await updateCollection(cfg, req.params['id'], {
+        name: typeof body.name === 'string' ? body.name : undefined,
+        description: typeof body.description === 'string' ? body.description : undefined,
+        tags: Array.isArray(body.tags)
+          ? body.tags.filter((t): t is string => typeof t === 'string')
+          : undefined,
+      });
+      if (!ok) {
+        res.status(404).json({ error: 'collection not found' });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/ORA-00001/.test(msg)) {
+        res.status(409).json({ error: 'a collection with that name already exists' });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+/** DELETE /api/corpus/collections/:id — artifacts demote to free-form. */
+corpusRouter.delete(
+  '/collections/:id',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const ok = await deleteCollection(cfg, req.params['id']);
+    if (!ok) {
+      res.status(404).json({ error: 'collection not found' });
+      return;
+    }
+    res.json({ ok: true });
   }),
 );
 
@@ -274,12 +403,21 @@ corpusRouter.get(
       whereClauses.push('notebook_id = :nb');
       filterBinds['nb'] = q['notebookId'];
     }
+    if (q['category']) {
+      whereClauses.push('category = :category');
+      filterBinds['category'] = q['category'];
+    }
+    if (q['collectionId']) {
+      whereClauses.push('collection_id = :collectionId');
+      filterBinds['collectionId'] = q['collectionId'];
+    }
     const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
     const listBinds = { ...filterBinds, lim: limit, off: offset };
 
     const { items, total } = await withConnection(cfg, async (conn) => {
       const listSql = `
-        SELECT id, kind, origin, title, notebook_id, artifact_id,
+        SELECT id, kind, origin, category, title, notebook_id, artifact_id, collection_id,
+               (SELECT name FROM collections cc WHERE cc.id = a.collection_id) AS collection_name,
                bucket, object_name, mime_type, size_bytes, tags, metadata,
                created_at,
                transcription_status, transcription_job_ocid,

@@ -82,3 +82,15 @@ sourcesRouter.post(
     }
   }),
 );
+
+// DELETE /api/notebooks/:id/sources/:sourceId — remove a source from a notebook.
+sourcesRouter.delete(
+  '/:sourceId',
+  asyncHandler(async (req, res) => {
+    const session = parseSessionHeader(req);
+    const sourceId = req.params.sourceId;
+    if (!sourceId) throw new SessionHeaderError('Missing source id', 400);
+    await withClient({ session }, (client) => client.deleteSource(sourceId));
+    res.json({ ok: true });
+  }),
+);
