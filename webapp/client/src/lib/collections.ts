@@ -1,6 +1,12 @@
 /** Client for the collections API (GET/POST/PATCH/DELETE /api/corpus/collections). */
 import { apiGet, apiJson, apiDelete } from './api';
 
+export interface CollectionPatch {
+  name?: string;
+  description?: string;
+  tags?: string[];
+}
+
 export interface CollectionSummary {
   id: string;
   name: string;
@@ -39,6 +45,10 @@ export function createCollection(input: {
 
 export function getCollection(id: string): Promise<CollectionDetail> {
   return apiGet(`/api/corpus/collections/${id}`);
+}
+
+export function updateCollection(id: string, patch: CollectionPatch): Promise<{ ok: boolean }> {
+  return apiJson(`/api/corpus/collections/${id}`, patch, 'PATCH');
 }
 
 export function deleteCollection(id: string): Promise<{ ok: boolean }> {

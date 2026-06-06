@@ -3,17 +3,25 @@
  * via POST /api/corpus/ingest?collectionId). Generate-from-collection is wired
  * in a later phase.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
 import ItemModal from '../../components/ItemModal';
 import MarkdownEditor from '../../components/MarkdownEditor';
+import UploadDrawer from '../../components/UploadDrawer';
 import { TypePicker } from '../../components/CreateFlow';
 import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
 import { describe, type TypeKey } from '../../lib/registry';
-import { getCollection, deleteCollection, kindToTypeKey, timeAgo, type CollectionDetail, type CollectionFile } from '../../lib/collections';
+import {
+  getCollection,
+  updateCollection,
+  deleteCollection,
+  kindToTypeKey,
+  timeAgo,
+  type CollectionDetail,
+  type CollectionFile,
+} from '../../lib/collections';
 import type { Item } from '../../lib/artifacts';
-import { apiFormData } from '../../lib/api';
 import { toast } from '../../lib/toast';
 
 function fmtSize(bytes: number | null): string {
@@ -34,6 +42,7 @@ export default function CollectionDetailPage() {
   const [noteEditing, setNoteEditing] = useState(false);
   const [picking, setPicking] = useState(false);
   const [genType, setGenType] = useState<TypeKey | null>(null);
+  const [editing, setEditing] = useState(false);
 
   function fileToItem(f: CollectionFile): Item {
     return {
@@ -50,6 +59,7 @@ export default function CollectionDetailPage() {
       createdAt: f.createdAt,
       chunkCount: 0,
       tags: [],
+      description: null,
     };
   }
 
@@ -105,6 +115,9 @@ export default function CollectionDetailPage() {
             )}
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
+            <button className="btn btn-soft" onClick={() => setEditing(true)} disabled={!col}>
+              <Icon id="i-gear" /> Edit
+            </button>
             <button className="btn btn-soft" onClick={() => setUploadOpen(true)}>
               <Icon id="i-upload" /> Upload
             </button>
@@ -231,43 +244,58 @@ export default function CollectionDetailPage() {
           }}
         />
       )}
+
+      {editing && col && (
+        <EditCollectionModal
+          id={id}
+          current={col}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            void reload();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function UploadDrawer({
-  collectionId,
+function EditCollectionModal({
+  id,
+  current,
   onClose,
-  onUploaded,
+  onSaved,
 }: {
-  collectionId: string;
+  id: string;
+  current: CollectionDetail;
   onClose: () => void;
-  onUploaded: () => void;
+  onSaved: () => void;
 }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [name, setName] = useState('');
+  const [name, setName] = useState(current.name);
+  const [description, setDescription] = useState(current.description ?? '');
+  const [tags, setTags] = useState(current.tags.join(', '));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  async function submit() {
-    if (!file) return;
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) {
+      setError('Name is required');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('title', (name.trim() || file.name).slice(0, 512));
-      form.append('kind', 'upload');
-      form.append('origin', 'upload');
-      form.append('collectionId', collectionId);
-      const r = await apiFormData<{ embedSkipped?: boolean }>('/api/corpus/ingest', form);
-      toast(
-        r.embedSkipped
-          ? 'Uploaded — not indexed for search (embedding quota exceeded)'
-          : 'Uploaded to collection',
-      );
-      onUploaded();
+      await updateCollection(id, {
+        name: name.trim(),
+        description: description.trim(),
+        tags: tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      });
+      toast('Collection updated');
+      onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -278,52 +306,65 @@ function UploadDrawer({
   return (
     <>
       <div className="scrim show" onClick={onClose} />
-      <aside className="drawer open" style={{ '--tc': 'var(--accent)' } as React.CSSProperties}>
-        <div className="drawer-head">
-          <span className="d-ic">
-            <Icon id="i-upload" />
-          </span>
-          <div className="d-tt">
-            <b>Upload to collection</b>
-            <small>Stored + indexed for search</small>
+      <div className="modal-root show" onClick={(e) => e.target === e.currentTarget && onClose()}>
+        <div className="modal" style={{ '--tc': 'var(--accent)' } as React.CSSProperties}>
+          <div className="modal-pad">
+            <div className="modal-tt">
+              <div>
+                <div className="m-type">Edit collection</div>
+                <h2>Edit collection</h2>
+                <p className="m-desc">Rename, re-describe, or re-tag this collection.</p>
+              </div>
+              <button className="icon-btn" onClick={onClose}>
+                <Icon id="i-close" />
+              </button>
+            </div>
+            <form onSubmit={submit}>
+              <div className="field">
+                <label>Name</label>
+                <input
+                  className="input"
+                  autoFocus
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Q3 Competitive Teardown"
+                />
+              </div>
+              <div className="field">
+                <label>Description (optional)</label>
+                <textarea
+                  className="input"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="What this collection is for…"
+                />
+              </div>
+              <div className="field">
+                <label>Tags (optional, comma-separated)</label>
+                <input
+                  className="input"
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                  placeholder="strategy, q3"
+                />
+              </div>
+              {error && (
+                <p className="hint" style={{ color: 'var(--accent)' }}>
+                  {error}
+                </p>
+              )}
+              <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                <button className="btn btn-primary" disabled={busy || !name.trim()}>
+                  {busy ? 'Saving…' : 'Save changes'}
+                </button>
+                <button type="button" className="btn btn-soft" onClick={onClose}>
+                  Cancel
+                </button>
+              </div>
+            </form>
           </div>
-          <button className="icon-btn x" onClick={onClose}>
-            <Icon id="i-close" />
-          </button>
         </div>
-        <div className="drawer-body">
-          <div className="field">
-            <label>File</label>
-            <button className="dropzone" style={{ width: '100%' }} onClick={() => inputRef.current?.click()}>
-              <Icon id="i-upload" />
-              <div style={{ marginTop: 8 }}>{file ? file.name : 'Click to choose a file'}</div>
-            </button>
-            <input
-              ref={inputRef}
-              type="file"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0] ?? null;
-                setFile(f);
-                if (f && !name) setName(f.name.replace(/\.[^.]+$/, ''));
-              }}
-            />
-          </div>
-          <div className="field">
-            <label>Name (optional)</label>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" />
-          </div>
-          {error && <p className="hint" style={{ color: 'var(--accent)' }}>{error}</p>}
-        </div>
-        <div className="drawer-foot">
-          <button className="btn btn-primary" disabled={busy || !file} onClick={submit}>
-            {busy ? 'Uploading…' : 'Upload'}
-          </button>
-          <button className="btn btn-soft" onClick={onClose}>
-            Cancel
-          </button>
-        </div>
-      </aside>
+      </div>
     </>
   );
 }

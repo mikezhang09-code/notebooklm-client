@@ -21,6 +21,8 @@ export interface Item {
   createdAt: string;
   chunkCount: number;
   tags: string[];
+  /** Free-text description (stored in metadata.description), or null. */
+  description: string | null;
 }
 
 interface RawRow {
@@ -83,6 +85,7 @@ function normalize(r: RawRow): Item {
     createdAt: r.CREATED_AT,
     chunkCount: Number(r.CHUNK_COUNT ?? 0),
     tags: parseJson<string[]>(r.TAGS, []),
+    description: typeof meta['description'] === 'string' ? (meta['description'] as string) : null,
   };
 }
 
@@ -144,6 +147,34 @@ export function isEditable(item: Item): boolean {
 
 export function deleteItem(id: string): Promise<{ ok: boolean }> {
   return apiDelete(`/api/corpus/artifacts/${id}`);
+}
+
+export interface ArtifactEditState {
+  title: string;
+  kind: string;
+  description: string;
+  tags: string[];
+}
+
+/** Fetch the editable fields of an artifact (title/kind/description/tags). */
+export async function getArtifactEdit(id: string): Promise<ArtifactEditState> {
+  const r = await apiGet<{ artifact: Record<string, unknown> }>(`/api/corpus/artifacts/${id}`);
+  const a = r.artifact ?? {};
+  const meta = parseJson<Record<string, unknown>>(a['METADATA'], {});
+  return {
+    title: typeof a['TITLE'] === 'string' ? a['TITLE'] : '',
+    kind: typeof a['KIND'] === 'string' ? a['KIND'] : 'upload',
+    description: typeof meta['description'] === 'string' ? (meta['description'] as string) : '',
+    tags: parseJson<string[]>(a['TAGS'], []),
+  };
+}
+
+/** Update an artifact's editable fields. Omitted fields are left unchanged. */
+export function updateArtifact(
+  id: string,
+  patch: { title?: string; kind?: string; description?: string; tags?: string[] },
+): Promise<{ ok: boolean; id: string }> {
+  return apiJson(`/api/corpus/artifacts/${id}`, patch, 'PATCH');
 }
 
 /** Save a generated job file into the corpus (free-form, or into a collection). */
