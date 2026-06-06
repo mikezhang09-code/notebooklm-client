@@ -45,17 +45,22 @@ async function main() {
     for (const row of rows) {
       console.log(`\nRe-embedding: ${row.TITLE}`);
       try {
+        // Use the object's real filename (carries the .pdf/.md/.png extension)
+        // for extractor selection — the title often has no extension, which
+        // would mis-route binary files (e.g. an infographic .png) into the text
+        // extractor and produce megabytes of garbage "text".
+        const filename = row.OBJECT_NAME.split('/').pop() || row.TITLE;
         const { pickExtractor } = await import('../server/corpus/extract/index.js');
-        const extractor = pickExtractor(row.MIME_TYPE, row.TITLE);
+        const extractor = pickExtractor(row.MIME_TYPE, filename);
         if (extractor.name === 'extractEmpty') {
-          console.log(`  -> Skipping download: binary file format`);
+          console.log(`  -> Skipping: non-text file (${filename})`);
           continue;
         }
 
         console.log(`  -> Fetching from OCI: ${row.OBJECT_NAME}`);
         const buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
         console.log(`  -> Got buffer of ${buffer.length} bytes. Extracting text...`);
-        const rawText = await extract(buffer, row.MIME_TYPE, row.TITLE);
+        const rawText = await extract(buffer, row.MIME_TYPE, filename);
         console.log(`  -> Extracted ${rawText.length} characters. Chunking...`);
         const chunks = chunkText(rawText);
 
@@ -66,15 +71,17 @@ async function main() {
 
         let vectors: number[][] = [];
         let retries = 0;
-        while (retries < 5) {
+        const MAX_RETRIES = 10;
+        while (retries < MAX_RETRIES) {
           try {
             console.log(`  -> Generating ${chunks.length} vectors via ${cfg.embeddingProvider} (Attempt ${retries + 1})...`);
             vectors = await embedTexts(cfg, chunks.map(c => c.text), 'SEARCH_DOCUMENT');
             break; // Success!
           } catch (e: any) {
             if (e.message && e.message.includes('429')) {
-              console.log('  -> Rate limited! Sleeping for 35 seconds...');
-              await new Promise(r => setTimeout(r, 35000));
+              const wait = 30000 + retries * 5000; // 30s, 35s, 40s … backoff
+              console.log(`  -> Rate limited! Sleeping for ${wait / 1000}s (retry ${retries + 1}/${MAX_RETRIES})...`);
+              await new Promise(r => setTimeout(r, wait));
               retries++;
             } else {
               throw e;
@@ -117,8 +124,14 @@ async function main() {
           }
         );
         console.log(`  -> Inserted ${chunks.length} chunks successfully!`);
-        console.log(`  -> Sleeping 6s to pace requests...`);
-        await new Promise(r => setTimeout(r, 6000));
+        // Pace between artifacts to respect the provider's RPM limit. Voyage's
+        // free tier without a payment method is only ~3 RPM; override with
+        // `--sleep <seconds>`.
+        const sleepArg = process.argv.indexOf('--sleep');
+        const sleepSec = sleepArg !== -1 ? parseInt(process.argv[sleepArg + 1] ?? '', 10) : 6;
+        const sleepMs = (Number.isFinite(sleepSec) && sleepSec >= 0 ? sleepSec : 6) * 1000;
+        console.log(`  -> Sleeping ${sleepMs / 1000}s to pace requests...`);
+        await new Promise(r => setTimeout(r, sleepMs));
       } catch (err) {
         console.error(`  -> Failed to process ${row.TITLE}:`, err);
       }
