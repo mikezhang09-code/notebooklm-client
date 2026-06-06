@@ -6,8 +6,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
 import GenerateDrawer, { type DrawerSource } from '../../components/GenerateDrawer';
+import ItemModal from '../../components/ItemModal';
 import { TYPE, TYPES, type TypeKey } from '../../lib/registry';
 import { apiGet, apiJson, apiFormData, apiDelete } from '../../lib/api';
+import { listItems, type Item } from '../../lib/artifacts';
 import { toast } from '../../lib/toast';
 
 interface SourceInfo {
@@ -44,6 +46,12 @@ function labelToTypeKey(label: string): TypeKey {
     'data-table': 'table',
   };
   return map[label] ?? 'report';
+}
+
+/** NotebookLM labels flashcards as 'quiz' (shared type); disambiguate by title. */
+function artifactTypeKey(a: ArtifactInfo): TypeKey {
+  if (a.typeLabel === 'quiz' && /flashcard/i.test(a.title)) return 'flash';
+  return labelToTypeKey(a.typeLabel);
 }
 
 type Tab = 'artifacts' | 'sources' | 'chat';
@@ -113,7 +121,13 @@ export default function NotebookDetailPage() {
       {error && <div className="empty" style={{ color: 'var(--accent)' }}>{error}</div>}
 
       {tab === 'artifacts' && (
-        <ArtifactsTab notebookId={id} artifacts={artifacts} sources={sources} onChanged={reload} />
+        <ArtifactsTab
+          notebookId={id}
+          notebookTitle={detail?.title}
+          artifacts={artifacts}
+          sources={sources}
+          onChanged={reload}
+        />
       )}
       {tab === 'sources' && (
         <SourcesTab notebookId={id} sources={sources} onChanged={reload} />
@@ -127,22 +141,80 @@ export default function NotebookDetailPage() {
 
 function ArtifactsTab({
   notebookId,
+  notebookTitle,
   artifacts,
   sources,
   onChanged,
 }: {
   notebookId: string;
+  notebookTitle?: string;
   artifacts: ArtifactInfo[];
   sources: SourceInfo[];
   onChanged: () => void;
 }) {
   const [genType, setGenType] = useState<TypeKey | null>(null);
+  // corpus artifacts already saved for this notebook, keyed by NotebookLM artifact id.
+  const [savedMap, setSavedMap] = useState<Map<string, Item>>(new Map());
+  // Artifacts saved this session whose corpus row may still be indexing (so we
+  // show "Saved" instantly without waiting for the async ingest to finish).
+  const [savedPending, setSavedPending] = useState<Set<string>>(new Set());
+  const [corpusEnabled, setCorpusEnabled] = useState(true);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [open, setOpen] = useState<Item | null>(null);
+
   const drawerSources: DrawerSource[] = sources.map((s) => ({
     id: s.id,
     title: s.title,
     ext: s.url ? 'web' : undefined,
   }));
 
+  async function fetchSaved(): Promise<Map<string, Item>> {
+    try {
+      const { items } = await listItems({ notebookId, limit: 200 });
+      const m = new Map<string, Item>();
+      for (const it of items) if (it.artifactId) m.set(it.artifactId, it);
+      setSavedMap(m);
+      setCorpusEnabled(true);
+      return m;
+    } catch {
+      setCorpusEnabled(false); // corpus disabled — fall back to download-only
+      return new Map();
+    }
+  }
+  useEffect(() => {
+    void fetchSaved();
+  }, [notebookId]);
+
+  /**
+   * Save = download (which auto-ingests). The download response confirms the
+   * ingest was scheduled, so we flip to "Saved" immediately, then poll in the
+   * background until the corpus row appears (needed to open the item modal).
+   */
+  async function save(a: ArtifactInfo) {
+    setSavingId(a.id);
+    try {
+      await apiJson(`/api/notebooks/${notebookId}/artifacts/${a.id}/download`, {
+        artifactTitle: a.title,
+        notebookTitle,
+      });
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+      setSavingId(null);
+      return;
+    }
+    // Optimistic: the byte download + ingest were accepted.
+    setSavedPending((p) => new Set(p).add(a.id));
+    setSavingId(null);
+    toast('Saved to library');
+    // Resolve the real corpus row (ingest is async — can take 10-30s for slides).
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const m = await fetchSaved();
+      if (m.has(a.id)) break;
+    }
+  }
+
+  /** Direct download when the corpus is disabled (no library to save into). */
   async function download(a: ArtifactInfo) {
     try {
       const r = await apiJson<{ files: { name: string; url: string }[]; streamUrl?: string }>(
@@ -168,23 +240,70 @@ function ArtifactsTab({
       {artifacts.length > 0 && (
         <div className="item-grid" style={{ marginBottom: 24 }}>
           {artifacts.map((a) => {
-            const t = TYPE[labelToTypeKey(a.typeLabel)];
+            const t = TYPE[artifactTypeKey(a)];
+            const isMind = a.typeLabel === 'mind-map';
+            const saved = savedMap.get(a.id);
+            const isSaved = !!saved || savedPending.has(a.id);
+            const saving = savingId === a.id;
             return (
               <div
                 key={a.id}
                 className="item"
                 style={{ '--tc': t.color } as React.CSSProperties}
-                onClick={() => (a.typeLabel === 'mind-map' ? toast('Open mind-maps in NotebookLM') : download(a))}
+                onClick={() => {
+                  if (isMind) {
+                    window.open(`https://notebooklm.google.com/notebook/${notebookId}`, '_blank');
+                  } else if (saved) {
+                    setOpen(saved);
+                  } else if (isSaved) {
+                    toast('Saved — still indexing, View available shortly');
+                  } else if (corpusEnabled) {
+                    if (!saving) void save(a);
+                  } else {
+                    void download(a);
+                  }
+                }}
               >
                 <div className="item-top">
                   <span className="t-ic">
                     <Icon id={t.icon} />
                   </span>
+                  {isMind ? (
+                    <span className="prov p-notebooklm">
+                      <Icon id="i-ext" /> NotebookLM
+                    </span>
+                  ) : isSaved ? (
+                    <span className="health-pill ok" style={{ padding: '4px 9px' }}>
+                      <span className="hd" /> Saved
+                    </span>
+                  ) : corpusEnabled ? (
+                    <button
+                      className="act"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!saving) void save(a);
+                      }}
+                    >
+                      {saving ? <span className="spinner" /> : <Icon id="i-download" />}
+                      {saving ? 'Saving…' : 'Save'}
+                    </button>
+                  ) : (
+                    <button
+                      className="act"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void download(a);
+                      }}
+                    >
+                      <Icon id="i-download" /> Download
+                    </button>
+                  )}
                 </div>
                 <h4>{a.title}</h4>
                 <div className="i-meta">
                   {t.label}
                   {a.durationSeconds ? ` · ${Math.round(a.durationSeconds / 60)}m` : ''}
+                  {isSaved ? ' · in library' : ''}
                 </div>
               </div>
             );
@@ -226,7 +345,21 @@ function ArtifactsTab({
           notebookId={notebookId}
           sources={drawerSources}
           onClose={() => setGenType(null)}
-          onDone={onChanged}
+          onDone={() => {
+            onChanged();
+            void fetchSaved();
+          }}
+        />
+      )}
+
+      {open && (
+        <ItemModal
+          item={open}
+          onClose={() => setOpen(null)}
+          onDeleted={() => {
+            void fetchSaved();
+            onChanged();
+          }}
         />
       )}
     </>

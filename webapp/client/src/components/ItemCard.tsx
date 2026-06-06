@@ -1,9 +1,9 @@
 import { Icon } from './Icon';
-import { TYPE } from '../lib/registry';
+import { describe } from '../lib/registry';
 import type { Item } from '../lib/artifacts';
 
 export default function ItemCard({ item, onOpen }: { item: Item; onOpen: (i: Item) => void }) {
-  const t = TYPE[item.typeKey] ?? TYPE.report;
+  const t = describe(item.kind, item.mimeType, item.title);
   return (
     <div
       className="item"

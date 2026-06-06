@@ -6,8 +6,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
-import { TYPE, type TypeKey } from '../../lib/registry';
-import { getCollection, deleteCollection, kindToTypeKey, timeAgo, type CollectionDetail } from '../../lib/collections';
+import ItemModal from '../../components/ItemModal';
+import MarkdownEditor from '../../components/MarkdownEditor';
+import { TypePicker } from '../../components/CreateFlow';
+import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
+import { describe, type TypeKey } from '../../lib/registry';
+import { getCollection, deleteCollection, kindToTypeKey, timeAgo, type CollectionDetail, type CollectionFile } from '../../lib/collections';
+import type { Item } from '../../lib/artifacts';
 import { apiFormData } from '../../lib/api';
 import { toast } from '../../lib/toast';
 
@@ -25,6 +30,28 @@ export default function CollectionDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [open, setOpen] = useState<Item | null>(null);
+  const [noteEditing, setNoteEditing] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [genType, setGenType] = useState<TypeKey | null>(null);
+
+  function fileToItem(f: CollectionFile): Item {
+    return {
+      id: f.id,
+      kind: f.kind,
+      typeKey: kindToTypeKey(f.kind) as TypeKey,
+      provenance: 'personal',
+      title: f.title,
+      from: col?.name ?? null,
+      artifactId: null,
+      notebookId: null,
+      mimeType: f.mimeType,
+      sizeBytes: f.sizeBytes,
+      createdAt: f.createdAt,
+      chunkCount: 0,
+      tags: [],
+    };
+  }
 
   async function reload() {
     if (!id) return;
@@ -81,10 +108,10 @@ export default function CollectionDetailPage() {
             <button className="btn btn-soft" onClick={() => setUploadOpen(true)}>
               <Icon id="i-upload" /> Upload
             </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => toast('Generate-from-collection arrives in the next phase')}
-            >
+            <button className="btn btn-soft" onClick={() => setNoteEditing(true)}>
+              <Icon id="i-doc" /> New note
+            </button>
+            <button className="btn btn-primary" onClick={() => setPicking(true)}>
               <Icon id="i-spark" /> Generate
             </button>
           </div>
@@ -103,21 +130,22 @@ export default function CollectionDetailPage() {
       {col && col.files.length > 0 && (
         <div className="files">
           {col.files.map((f) => {
-            const t = TYPE[kindToTypeKey(f.kind) as TypeKey] ?? TYPE.report;
+            const face = describe(f.kind, f.mimeType, f.title);
             return (
               <div
                 key={f.id}
                 className="file-row"
-                style={{ '--tc': t.color } as React.CSSProperties}
+                style={{ '--tc': face.color } as React.CSSProperties}
+                onClick={() => setOpen(fileToItem(f))}
               >
                 <span className="f-ic">
-                  <Icon id={t.icon} />
+                  <Icon id={face.icon} />
                 </span>
                 <div style={{ minWidth: 0 }}>
                   <div className="f-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {f.title}
                   </div>
-                  <div className="f-sub">{t.label}</div>
+                  <div className="f-sub">{face.label}</div>
                 </div>
                 <div className="f-col">{fmtSize(f.sizeBytes)}</div>
                 <div className="f-col">{new Date(f.createdAt).toLocaleDateString()}</div>
@@ -126,7 +154,14 @@ export default function CollectionDetailPage() {
                     <Icon id="i-folder" /> Collection
                   </span>
                 </div>
-                <button className="icon-btn" title="More" onClick={() => toast('Item actions arrive with the item modal')}>
+                <button
+                  className="icon-btn"
+                  title="View / actions"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpen(fileToItem(f));
+                  }}
+                >
                   <Icon id="i-more" />
                 </button>
               </div>
@@ -147,6 +182,51 @@ export default function CollectionDetailPage() {
           onClose={() => setUploadOpen(false)}
           onUploaded={() => {
             setUploadOpen(false);
+            void reload();
+          }}
+        />
+      )}
+
+      {open && (
+        <ItemModal
+          item={open}
+          onClose={() => setOpen(null)}
+          onDeleted={() => {
+            setOpen(null);
+            void reload();
+          }}
+        />
+      )}
+
+      {noteEditing && (
+        <MarkdownEditor
+          collectionId={id}
+          onClose={() => setNoteEditing(false)}
+          onSaved={() => {
+            setNoteEditing(false);
+            void reload();
+          }}
+        />
+      )}
+
+      {picking && (
+        <TypePicker
+          onClose={() => setPicking(false)}
+          onPick={(key) => {
+            setPicking(false);
+            if (key === 'note') setNoteEditing(true);
+            else if (key === 'mind') toast('Mind-maps are created in NotebookLM');
+            else setGenType(key);
+          }}
+        />
+      )}
+      {genType && (
+        <GenerateStandaloneDrawer
+          typeKey={genType}
+          collectionId={id}
+          onClose={() => setGenType(null)}
+          onDone={() => {
+            setGenType(null);
             void reload();
           }}
         />

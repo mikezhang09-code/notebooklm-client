@@ -79,7 +79,7 @@ export function CreateChooser({
               <Icon id="i-close" />
             </button>
           </div>
-          <div className="choose2">
+          <div className={t.generate ? 'choose2' : ''}>
             <button className="choose-card" onClick={onUpload}>
               <span className="ch-ic">
                 <Icon id="i-upload" />
@@ -87,13 +87,15 @@ export function CreateChooser({
               <b>Upload a file</b>
               <small>Store an existing {t.label.toLowerCase()} in your library.</small>
             </button>
-            <button className="choose-card primary" onClick={onGenerate}>
-              <span className="ch-ic">
-                <Icon id="i-spark" />
-              </span>
-              <b>Generate with AI</b>
-              <small>Create a new {t.label.toLowerCase()} from your sources.</small>
-            </button>
+            {t.generate && (
+              <button className="choose-card primary" onClick={onGenerate}>
+                <span className="ch-ic">
+                  <Icon id="i-spark" />
+                </span>
+                <b>Generate with AI</b>
+                <small>Create a new {t.label.toLowerCase()} from a URL, text, file, or research.</small>
+              </button>
+            )}
           </div>
         </div>
       </div>

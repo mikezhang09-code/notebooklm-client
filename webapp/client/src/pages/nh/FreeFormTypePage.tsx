@@ -9,9 +9,10 @@ import { Icon } from '../../components/Icon';
 import ItemModal from '../../components/ItemModal';
 import { CreateChooser } from '../../components/CreateFlow';
 import UploadDrawer from '../../components/UploadDrawer';
+import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
+import MarkdownEditor from '../../components/MarkdownEditor';
 import { TYPE, SOURCES, type TypeKey } from '../../lib/registry';
-import { listItems, type Item, type Provenance } from '../../lib/artifacts';
-import { toast } from '../../lib/toast';
+import { listItems, fetchNotebookMap, resolveFrom, type Item, type Provenance } from '../../lib/artifacts';
 
 type Filter = 'all' | Provenance;
 const FILTERS: { key: Filter; label: string; dot?: string }[] = [
@@ -40,13 +41,24 @@ export default function FreeFormTypePage() {
   const [open, setOpen] = useState<Item | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [noteEditing, setNoteEditing] = useState(false);
 
   async function reload() {
     setLoading(true);
     setError(null);
     try {
-      const { items } = await listItems({ kind: t.ingestKind, limit: 200 });
-      setItems(items);
+      // Fetch everything and bucket by display type (uploads + generated
+      // artifacts share these sections), and resolve notebook names for "From".
+      const [{ items: all }, nbMap] = await Promise.all([
+        listItems({ limit: 500 }),
+        fetchNotebookMap(),
+      ]);
+      setItems(
+        all
+          .filter((it) => it.typeKey === typeKey)
+          .map((it) => ({ ...it, from: resolveFrom(it, nbMap) })),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -81,7 +93,10 @@ export default function FreeFormTypePage() {
               <h1>{t.plural}</h1>
             </div>
           </div>
-          <button className="btn btn-primary" onClick={() => setChoosing(true)}>
+          <button
+            className="btn btn-primary"
+            onClick={() => (typeKey === 'note' ? setNoteEditing(true) : setChoosing(true))}
+          >
             <Icon id="i-plus" />
             New {t.label.toLowerCase()}
           </button>
@@ -162,7 +177,7 @@ export default function FreeFormTypePage() {
           }}
           onGenerate={() => {
             setChoosing(false);
-            toast('Generate from inside a notebook (Library → NotebookLM)');
+            setGenerating(true);
           }}
         />
       )}
@@ -172,6 +187,22 @@ export default function FreeFormTypePage() {
           onClose={() => setUploading(false)}
           onUploaded={() => {
             setUploading(false);
+            void reload();
+          }}
+        />
+      )}
+      {generating && (
+        <GenerateStandaloneDrawer
+          typeKey={typeKey}
+          onClose={() => setGenerating(false)}
+          onDone={() => void reload()}
+        />
+      )}
+      {noteEditing && (
+        <MarkdownEditor
+          onClose={() => setNoteEditing(false)}
+          onSaved={() => {
+            setNoteEditing(false);
             void reload();
           }}
         />

@@ -4,10 +4,10 @@
  */
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
-import { TYPE } from '../lib/registry';
-import { SOURCES } from '../lib/registry';
+import { describe, SOURCES } from '../lib/registry';
 import { getDownloadUrl, deleteItem, shareItem, type Item } from '../lib/artifacts';
 import { toast } from '../lib/toast';
+import Viewer from './Viewer';
 
 function fmtSize(b: number | null): string {
   if (!b) return '—';
@@ -25,10 +25,11 @@ export default function ItemModal({
   onClose: () => void;
   onDeleted?: () => void;
 }) {
-  const t = TYPE[item.typeKey] ?? TYPE.report;
+  const t = describe(item.kind, item.mimeType, item.title);
   const src = SOURCES[item.provenance];
   const [downloadUrl, setDownloadUrl] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [viewing, setViewing] = useState(false);
 
   useEffect(() => {
     getDownloadUrl(item.id).then(setDownloadUrl).catch(() => setDownloadUrl(undefined));
@@ -101,12 +102,14 @@ export default function ItemModal({
           </dl>
         </div>
         <div className="modal-foot">
+          <button className="btn btn-primary" onClick={() => setViewing(true)}>
+            <Icon id="i-grid" /> View
+          </button>
           <a
-            className="btn btn-primary"
+            className="btn btn-soft"
             href={downloadUrl ?? '#'}
             target="_blank"
             rel="noreferrer"
-            aria-disabled={!downloadUrl}
             onClick={(e) => !downloadUrl && e.preventDefault()}
           >
             <Icon id="i-ext" /> Open
@@ -122,11 +125,20 @@ export default function ItemModal({
           <button className="btn btn-soft" onClick={handleShare}>
             <Icon id="i-share" /> Share
           </button>
-          <button className="btn btn-soft" style={{ marginLeft: 'auto', color: 'var(--accent)' }} disabled={busy} onClick={handleDelete}>
-            <Icon id="i-trash" /> Delete
-          </button>
+          {onDeleted && (
+            <button
+              className="btn btn-soft"
+              style={{ marginLeft: 'auto', color: 'var(--accent)' }}
+              disabled={busy}
+              onClick={handleDelete}
+            >
+              <Icon id="i-trash" /> Delete
+            </button>
+          )}
         </div>
       </div>
+
+      {viewing && <Viewer id={item.id} title={item.title} tc={t.color} onClose={() => setViewing(false)} />}
     </div>
   );
 }

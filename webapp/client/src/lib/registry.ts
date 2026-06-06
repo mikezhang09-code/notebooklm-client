@@ -14,7 +14,8 @@ export type TypeKey =
   | 'info'
   | 'slides'
   | 'table'
-  | 'mind';
+  | 'mind'
+  | 'note';
 
 export interface ArtifactType {
   key: TypeKey;
@@ -42,6 +43,8 @@ export const TYPES: ArtifactType[] = [
   { key: 'table', label: 'Data table', plural: 'Data tables', icon: 'i-table', color: '#8a7c4a', generate: true, backendKind: 'data-table', ingestKind: 'data_table' },
   // Mindmap can't be generated headlessly (needs a real browser); no backend kind.
   { key: 'mind', label: 'Mindmap', plural: 'Mindmaps', icon: 'i-mind', color: '#5b6bbf', generate: false, backendKind: null, ingestKind: 'upload', isNew: true },
+  // Note: hand-written markdown — created via the editor, not generated/uploaded.
+  { key: 'note', label: 'Note', plural: 'Notes', icon: 'i-doc', color: '#6d8a96', generate: false, backendKind: null, ingestKind: 'note' },
 ];
 
 export const TYPE: Record<TypeKey, ArtifactType> = Object.fromEntries(
@@ -171,9 +174,95 @@ export const GEN_SPEC: Record<TypeKey, GenSpec> = {
     instructions: true,
     language: true,
   },
+  // Notes are hand-written, not generated — no generate spec.
+  note: { fields: [], instructions: false, language: false },
 };
 
 /** Lower-case option value → backend enum (e.g. "Deep dive" → "deep_dive"). */
 export function toBackendValue(v: string): string {
   return v.toLowerCase().replace(/\s+/g, '_');
+}
+
+// ── File-type classification (for uploads, which all share kind='upload') ──
+
+export interface Face {
+  label: string;
+  icon: string;
+  color: string;
+}
+
+const KIND_TO_KEY: Record<string, TypeKey> = {
+  audio: 'audio',
+  report: 'report',
+  video: 'video',
+  quiz: 'quiz',
+  flashcards: 'flash',
+  infographic: 'info',
+  slides: 'slides',
+  data_table: 'table',
+  mind: 'mind',
+  note: 'note',
+};
+
+/**
+ * Classify an uploaded file into a display face (label/icon/color) from its
+ * MIME type, falling back to the filename extension. Uploads otherwise all
+ * carry kind='upload' and would be indistinguishable.
+ */
+export function fileFace(mimeType?: string | null, title?: string): Face {
+  const m = (mimeType ?? '').split(';')[0]!.trim().toLowerCase();
+  const ext = (title?.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+  const has = (...e: string[]) => e.includes(ext);
+
+  if (m === 'text/html' || has('html', 'htm')) return { label: 'Web page', icon: 'i-link', color: '#4a76a8' };
+  if (m === 'text/markdown' || m === 'text/x-markdown' || has('md', 'markdown'))
+    return { label: 'Markdown', icon: 'i-doc', color: '#8a7c4a' };
+  if (m === 'application/pdf' || has('pdf')) return { label: 'PDF', icon: 'i-report', color: '#c1503f' };
+  if (m.includes('wordprocessingml') || m === 'application/msword' || has('doc', 'docx'))
+    return { label: 'Document', icon: 'i-doc', color: '#4a76a8' };
+  if (m.includes('presentationml') || m === 'application/vnd.ms-powerpoint' || has('ppt', 'pptx'))
+    return { label: 'Slides', icon: 'i-slides', color: '#467b86' };
+  if (m.includes('spreadsheetml') || m === 'application/vnd.ms-excel' || m === 'text/csv' || has('csv', 'xls', 'xlsx'))
+    return { label: 'Spreadsheet', icon: 'i-table', color: '#8a7c4a' };
+  if (m === 'application/json' || has('json')) return { label: 'JSON', icon: 'i-table', color: '#8a7c4a' };
+  if (m.startsWith('image/') || has('png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'))
+    return { label: 'Image', icon: 'i-info', color: '#8a6aa8' };
+  if (m.startsWith('audio/') || has('mp3', 'wav', 'm4a')) return { label: 'Audio', icon: 'i-audio', color: '#c15a37' };
+  if (m.startsWith('video/') || has('mp4', 'mov', 'webm')) return { label: 'Video', icon: 'i-video', color: '#8a6aa8' };
+  if (m === 'text/plain' || has('txt')) return { label: 'Text', icon: 'i-doc', color: '#8a7c4a' };
+  return { label: 'File', icon: 'i-doc', color: '#8c8173' };
+}
+
+/**
+ * Resolve the display face for any artifact: real artifact kinds use the type
+ * registry; uploads are classified by file type (so HTML ≠ Markdown ≠ PDF …).
+ */
+export function describe(kind: string, mimeType?: string | null, title?: string): Face {
+  if (kind === 'upload') return fileFace(mimeType, title);
+  const t = TYPE[KIND_TO_KEY[kind] ?? 'report'];
+  return { label: t.label, icon: t.icon, color: t.color };
+}
+
+/**
+ * Bucket any artifact into one of the 9 output-type keys for Free Forms
+ * grouping. Real kinds map directly; uploads map to the nearest output type by
+ * file type (e.g. a CSV upload → data table, an mp3 upload → audio, documents
+ * → report). Keeps uploaded + generated artifacts in the same type sections.
+ */
+export function typeKeyFor(kind: string, mimeType?: string | null, title?: string): TypeKey {
+  if (kind !== 'upload') return KIND_TO_KEY[kind] ?? 'report';
+  switch (fileFace(mimeType, title).label) {
+    case 'Spreadsheet':
+      return 'table';
+    case 'Slides':
+      return 'slides';
+    case 'Audio':
+      return 'audio';
+    case 'Video':
+      return 'video';
+    case 'Image':
+      return 'info';
+    default:
+      return 'report'; // Web page, Markdown, PDF, Document, Text, JSON, File
+  }
 }

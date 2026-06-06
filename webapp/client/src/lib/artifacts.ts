@@ -1,6 +1,6 @@
 /** Client for the corpus artifacts aggregation (GET /api/corpus/artifacts). */
 import { apiGet, apiJson, apiDelete } from './api';
-import { kindToTypeKey } from './collections';
+import { typeKeyFor } from './registry';
 import type { TypeKey } from './registry';
 
 export type Provenance = 'notebooklm' | 'personal' | 'standalone';
@@ -13,6 +13,10 @@ export interface Item {
   title: string;
   /** Originating notebook/collection name, or null for free-form. */
   from: string | null;
+  /** Source NotebookLM artifact id (for matching saved notebook artifacts). */
+  artifactId: string | null;
+  notebookId: string | null;
+  mimeType: string | null;
   sizeBytes: number | null;
   createdAt: string;
   chunkCount: number;
@@ -26,8 +30,10 @@ interface RawRow {
   ORIGIN: string;
   TITLE: string;
   NOTEBOOK_ID: string | null;
+  ARTIFACT_ID: string | null;
   COLLECTION_ID: string | null;
   COLLECTION_NAME: string | null;
+  MIME_TYPE: string | null;
   SIZE_BYTES: number | null;
   CREATED_AT: string;
   CHUNK_COUNT: number;
@@ -66,10 +72,13 @@ function normalize(r: RawRow): Item {
   return {
     id: r.ID,
     kind: r.KIND,
-    typeKey: kindToTypeKey(r.KIND) as TypeKey,
+    typeKey: typeKeyFor(r.KIND, r.MIME_TYPE, r.TITLE),
     provenance: prov,
     title: r.TITLE,
     from: from ?? null,
+    artifactId: r.ARTIFACT_ID ?? null,
+    notebookId: r.NOTEBOOK_ID ?? null,
+    mimeType: r.MIME_TYPE ?? null,
     sizeBytes: r.SIZE_BYTES != null ? Number(r.SIZE_BYTES) : null,
     createdAt: r.CREATED_AT,
     chunkCount: Number(r.CHUNK_COUNT ?? 0),
@@ -80,11 +89,13 @@ function normalize(r: RawRow): Item {
 export async function listItems(params?: {
   kind?: string;
   category?: string;
+  notebookId?: string;
   limit?: number;
 }): Promise<{ items: Item[]; total: number }> {
   const qs = new URLSearchParams();
   if (params?.kind) qs.set('kind', params.kind);
   if (params?.category) qs.set('category', params.category);
+  if (params?.notebookId) qs.set('notebookId', params.notebookId);
   qs.set('limit', String(params?.limit ?? 200));
   const res = await apiGet<{ items: RawRow[]; total: number }>(
     `/api/corpus/artifacts?${qs.toString()}`,
@@ -98,8 +109,52 @@ export async function getDownloadUrl(id: string): Promise<string | undefined> {
   return r.downloadUrl;
 }
 
+export type ViewPayload =
+  | { type: 'pdf'; downloadUrl: string; mimeType?: string }
+  | { type: 'office'; officeViewerUrl: string; downloadUrl: string; mimeType?: string }
+  | { type: 'html'; content: string; downloadUrl: string; mimeType?: string }
+  | { type: 'text'; content: string; downloadUrl: string; mimeType?: string }
+  | { type: 'unsupported'; downloadUrl: string; mimeType?: string };
+
+/** Fetch inline-render info for an artifact (pdf/office/html/text/unsupported). */
+export function getView(id: string): Promise<ViewPayload> {
+  return apiGet<ViewPayload>(`/api/corpus/artifacts/${id}/view`);
+}
+
 export function deleteItem(id: string): Promise<{ ok: boolean }> {
   return apiDelete(`/api/corpus/artifacts/${id}`);
+}
+
+/** Save a generated job file into the corpus (free-form, or into a collection). */
+export function saveFromJob(input: {
+  jobId: string;
+  filename: string;
+  kind: string;
+  title: string;
+  origin?: 'upload' | 'notebooklm';
+  collectionId?: string;
+}): Promise<{ id: string }> {
+  return apiJson('/api/corpus/save-from-job', input);
+}
+
+/** Fetch notebook id → title (for resolving the "From" column on notebooklm items). */
+export async function fetchNotebookMap(): Promise<Map<string, string>> {
+  try {
+    const { notebooks } = await apiGet<{ notebooks: { id: string; title: string }[] }>(
+      '/api/notebooks',
+    );
+    return new Map(notebooks.map((n) => [n.id, n.title]));
+  } catch {
+    return new Map();
+  }
+}
+
+/** Best display value for an item's origin: prefer the live notebook name. */
+export function resolveFrom(item: Item, nbMap: Map<string, string>): string | null {
+  if (item.provenance === 'notebooklm' && item.notebookId) {
+    return nbMap.get(item.notebookId) ?? item.from ?? item.notebookId;
+  }
+  return item.from;
 }
 
 /** Returns a long-lived share URL (server shape: { shareUrl } or { url }). */

@@ -10,9 +10,10 @@ import ItemCard from '../../components/ItemCard';
 import ItemModal from '../../components/ItemModal';
 import { TypePicker, CreateChooser } from '../../components/CreateFlow';
 import UploadDrawer from '../../components/UploadDrawer';
+import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
+import MarkdownEditor from '../../components/MarkdownEditor';
 import { TYPES, type TypeKey } from '../../lib/registry';
-import { listItems, type Item } from '../../lib/artifacts';
-import { toast } from '../../lib/toast';
+import { listItems, fetchNotebookMap, resolveFrom, type Item } from '../../lib/artifacts';
 
 export default function FreeFormsOverviewPage() {
   const navigate = useNavigate();
@@ -25,13 +26,18 @@ export default function FreeFormsOverviewPage() {
   const [picking, setPicking] = useState(false);
   const [chooseType, setChooseType] = useState<TypeKey | null>(null);
   const [uploadType, setUploadType] = useState<TypeKey | null>(null);
+  const [genType, setGenType] = useState<TypeKey | null>(null);
+  const [noteEditing, setNoteEditing] = useState(false);
 
   async function reload() {
     setLoading(true);
     setError(null);
     try {
-      const { items } = await listItems({ limit: 200 });
-      setItems(items);
+      const [{ items }, nbMap] = await Promise.all([
+        listItems({ limit: 500 }),
+        fetchNotebookMap(),
+      ]);
+      setItems(items.map((it) => ({ ...it, from: resolveFrom(it, nbMap) })));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -119,7 +125,8 @@ export default function FreeFormsOverviewPage() {
           onClose={() => setPicking(false)}
           onPick={(key) => {
             setPicking(false);
-            setChooseType(key);
+            if (key === 'note') setNoteEditing(true);
+            else setChooseType(key);
           }}
         />
       )}
@@ -132,8 +139,8 @@ export default function FreeFormsOverviewPage() {
             setChooseType(null);
           }}
           onGenerate={() => {
+            setGenType(chooseType);
             setChooseType(null);
-            toast('Generate from inside a notebook (Library → NotebookLM)');
           }}
         />
       )}
@@ -143,6 +150,22 @@ export default function FreeFormsOverviewPage() {
           onClose={() => setUploadType(null)}
           onUploaded={() => {
             setUploadType(null);
+            void reload();
+          }}
+        />
+      )}
+      {genType && (
+        <GenerateStandaloneDrawer
+          typeKey={genType}
+          onClose={() => setGenType(null)}
+          onDone={() => void reload()}
+        />
+      )}
+      {noteEditing && (
+        <MarkdownEditor
+          onClose={() => setNoteEditing(false)}
+          onSaved={() => {
+            setNoteEditing(false);
             void reload();
           }}
         />
