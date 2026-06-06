@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { Icon } from '../../components/Icon';
 import GenerateDrawer, { type DrawerSource } from '../../components/GenerateDrawer';
 import ItemModal from '../../components/ItemModal';
@@ -664,7 +665,7 @@ function renderAnswer(text: string): string {
   // Replace bracketed citation lists ([1, 2], [2, 5-7], [13-15]) with chips.
   // Restricted to digit/comma/space/hyphen/en-dash content so prose like
   // "[note]" or markdown links are left untouched.
-  return html.replace(/\[(\d[\d\s,–-]*)\]/g, (whole, grp: string) => {
+  html = html.replace(/\[(\d[\d\s,–-]*)\]/g, (whole, grp: string) => {
     const parts = grp
       .split(',')
       .map((s) => s.trim())
@@ -672,6 +673,9 @@ function renderAnswer(text: string): string {
     if (parts.length === 0) return whole;
     return parts.map((p) => `<sup class="cite-chip">${p}</sup>`).join('');
   });
+  // The answer is model output that can echo source HTML or be steered by
+  // prompt injection, so sanitize before injecting via dangerouslySetInnerHTML.
+  return DOMPurify.sanitize(html);
 }
 
 function ChatTab({ notebookId, sourceCount }: { notebookId: string; sourceCount: number }) {

@@ -3,7 +3,7 @@
  * free-text description, and adjust tags. Patches PATCH /api/corpus/artifacts/:id.
  * Used for collection + free-form artifacts (not NotebookLM-sourced ones).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { UPLOAD_KIND_OPTIONS } from '../lib/registry';
 import { getArtifactEdit, updateArtifact } from '../lib/artifacts';
@@ -27,6 +27,10 @@ export default function EditItemDrawer({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A successful save calls onSaved(), which unmounts this drawer; guard the
+  // post-await state updates so they don't run on an unmounted component.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   useEffect(() => {
     let live = true;
@@ -71,9 +75,10 @@ export default function EditItemDrawer({
       toast('Saved');
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
+      if (mounted.current) {
+        setError(err instanceof Error ? err.message : String(err));
+        setBusy(false);
+      }
     }
   }
 

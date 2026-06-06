@@ -63,7 +63,10 @@ export default function UploadDrawer({
     setBusy(true);
     let okCount = 0;
     let skipped = false;
+    let hasError = false;
     // Sequential upload keeps memory bounded and gives clear per-file status.
+    // The Remove button + dropzone are disabled while busy, so `files` indices
+    // stay stable for the duration of this loop.
     for (let i = 0; i < files.length; i++) {
       if (files[i]!.status === 'done') continue;
       patch(i, { status: 'uploading', error: undefined });
@@ -80,6 +83,7 @@ export default function UploadDrawer({
         okCount++;
         patch(i, { status: 'done' });
       } catch (err) {
+        hasError = true;
         patch(i, { status: 'error', error: err instanceof Error ? err.message : String(err) });
       }
     }
@@ -92,9 +96,11 @@ export default function UploadDrawer({
           ? `Uploaded ${okCount} file${okCount === 1 ? '' : 's'}${where} — some not indexed (embedding quota exceeded)`
           : `Uploaded ${okCount} file${okCount === 1 ? '' : 's'}${where}`,
       );
-      onUploaded();
+      // Only auto-close when everything succeeded; on partial failure keep the
+      // drawer open so the user can retry just the failed files (the Done
+      // button reloads the parent list for the ones that did succeed).
+      if (!hasError) onUploaded();
     }
-    // If any failed, the drawer stays open so the user can retry just those.
   }
 
   return (
@@ -119,9 +125,11 @@ export default function UploadDrawer({
             <button
               className="dropzone"
               style={{ width: '100%' }}
-              onClick={() => inputRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
+              disabled={busy}
+              onClick={() => !busy && inputRef.current?.click()}
+              onDragOver={(e) => !busy && e.preventDefault()}
               onDrop={(e) => {
+                if (busy) return;
                 e.preventDefault();
                 addFiles(e.dataTransfer.files);
               }}
@@ -162,7 +170,7 @@ export default function UploadDrawer({
                 {f.status === 'done' && <span style={{ fontSize: 12, color: 'var(--ok, #5f8a5a)' }}>✓ Uploaded</span>}
                 {f.status === 'uploading' && <span style={{ fontSize: 12 }}>Uploading…</span>}
                 {f.status !== 'uploading' && f.status !== 'done' && (
-                  <button className="icon-btn x" title="Remove" onClick={() => remove(i)}>
+                  <button className="icon-btn x" title="Remove" disabled={busy} onClick={() => remove(i)}>
                     <Icon id="i-close" />
                   </button>
                 )}
@@ -202,7 +210,11 @@ export default function UploadDrawer({
                 ? `Upload ${pendingCount} files`
                 : 'Upload'}
           </button>
-          <button className="btn btn-soft" onClick={onClose}>
+          <button
+            className="btn btn-soft"
+            disabled={busy}
+            onClick={() => (files.some((f) => f.status === 'done') ? onUploaded() : onClose())}
+          >
             {files.some((f) => f.status === 'done') ? 'Done' : 'Cancel'}
           </button>
         </div>
