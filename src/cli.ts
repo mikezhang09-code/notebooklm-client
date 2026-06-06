@@ -730,6 +730,38 @@ addBrowserOptions(chatCmd)
 
 program.addCommand(chatCmd);
 
+// ── Chat-History Command ──
+
+const chatHistoryCmd = new Command('chat-history')
+  .description("Retrieve a notebook's saved conversation history")
+  .argument('<notebook-id>', 'Notebook ID');
+
+addBrowserOptions(chatHistoryCmd)
+  .option('--limit <n>', 'Max turns to fetch', '50')
+  .option('--json', 'Output raw JSON instead of formatted text')
+  .action(async (notebookId: string, opts) => {
+    await withClient(opts, async (client) => {
+      const turns = await client.getConversationTurns(notebookId, {
+        limit: Number.parseInt(opts.limit, 10) || 50,
+      });
+      if (opts.json) {
+        console.log(JSON.stringify(turns, null, 2));
+        return;
+      }
+      if (turns.length === 0) {
+        console.error('No conversation history for this notebook.');
+        return;
+      }
+      for (const t of turns) {
+        const who = t.role === 'user' ? 'You' : 'NotebookLM';
+        const when = t.at ? ` (${t.at.slice(0, 16).replace('T', ' ')})` : '';
+        console.log(`\n## ${who}${when}\n${t.text}`);
+      }
+    });
+  });
+
+program.addCommand(chatHistoryCmd);
+
 // ── Diagnose Command ──
 
 const diagnoseCmd = new Command('diagnose')

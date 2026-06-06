@@ -650,11 +650,32 @@ function ChatTab({ notebookId, sourceCount }: { notebookId: string; sourceCount:
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const threadRef = useRef<HTMLDivElement>(null);
+
+  // Load the notebook's persisted conversation history when the chat opens.
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingHistory(true);
+    apiGet<{ turns: { role: 'user' | 'assistant'; text: string }[] }>(
+      `/api/chat/history?notebookId=${encodeURIComponent(notebookId)}`,
+    )
+      .then((r) => {
+        if (cancelled) return;
+        setMsgs(r.turns.map((t) => ({ role: t.role === 'user' ? 'user' : 'bot', text: t.text })));
+      })
+      .catch(() => {
+        /* history is best-effort; leave the empty state */
+      })
+      .finally(() => !cancelled && setLoadingHistory(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [notebookId]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [msgs, busy]);
+  }, [msgs, busy, loadingHistory]);
 
   async function send(q: string) {
     const question = q.trim();
@@ -684,7 +705,9 @@ function ChatTab({ notebookId, sourceCount }: { notebookId: string; sourceCount:
   return (
     <div className="chat-wrap">
       <div className="chat-thread" ref={threadRef}>
-        {msgs.length === 0 ? (
+        {loadingHistory && msgs.length === 0 ? (
+          <div className="empty">Loading conversation history…</div>
+        ) : msgs.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-orb">
               <Icon id="i-chat" />

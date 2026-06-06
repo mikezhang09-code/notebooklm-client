@@ -159,6 +159,15 @@ export default function Viewer({
             {view?.type === 'office' && (
               <iframe title={title} src={view.officeViewerUrl} style={{ width: '100%', height: '100%', border: 0 }} />
             )}
+            {view?.type === 'image' && (
+              <div style={{ display: 'grid', placeItems: 'center', minHeight: '100%', padding: 24 }}>
+                <img
+                  src={view.downloadUrl}
+                  alt={title}
+                  style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 8, boxShadow: 'var(--shadow)' }}
+                />
+              </div>
+            )}
             {view?.type === 'html' && (
               <div
                 ref={bodyRef}

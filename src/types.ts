@@ -331,6 +331,15 @@ export interface ChatWithCitationsResult {
   citations: ChatCitation[];
 }
 
+/** One turn of a notebook's persisted conversation history. */
+export interface ConversationTurn {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  /** ISO 8601 timestamp, or '' if unavailable. */
+  at: string;
+}
+
 // ── Workflow Progress ──
 
 export interface WorkflowProgress {

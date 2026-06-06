@@ -34,6 +34,7 @@ import {
 import {
   ingestArtifact,
   saveChatArtifact,
+  updateArtifactText,
   type ArtifactKind,
   type ArtifactOrigin,
   type SavedChatTurn,
@@ -521,6 +522,15 @@ function inferMimeType(objectName: string): string | null {
     txt: 'text/plain',
     csv: 'text/csv',
     json: 'application/json',
+    html: 'text/html',
+    htm: 'text/html',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    bmp: 'image/bmp',
   };
   return ext ? (map[ext] ?? null) : null;
 }
@@ -846,7 +856,77 @@ corpusRouter.get(
       return;
     }
 
+    if (mimeType && mimeType.startsWith('image/')) {
+      res.json({ type: 'image', ...base });
+      return;
+    }
+
     res.json({ type: 'unsupported', ...base });
+  }),
+);
+
+/**
+ * GET /api/corpus/artifacts/:id/raw — raw UTF-8 text of a text-like artifact
+ * (markdown/text). Used by the editor to load existing content. Returns
+ * { content, mimeType }.
+ */
+corpusRouter.get(
+  '/artifacts/:id/raw',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const row = await withConnection(cfg, async (conn) => {
+      const r = await conn.execute<{ OBJECT_NAME: string; MIME_TYPE: string | null }>(
+        `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+        { id },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      return r.rows?.[0];
+    });
+    if (!row) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+    const buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
+    res.json({ content: buffer.toString('utf8'), mimeType: row.MIME_TYPE ?? null });
+  }),
+);
+
+/**
+ * PUT /api/corpus/artifacts/:id/content — replace a text artifact's content.
+ * Body: { markdown: string, title?: string }. Re-embeds + overwrites the blob.
+ */
+corpusRouter.put(
+  '/artifacts/:id/content',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const body = (req.body ?? {}) as { markdown?: unknown; title?: unknown };
+    if (typeof body.markdown !== 'string') {
+      res.status(400).json({ error: 'markdown is required' });
+      return;
+    }
+    const result = await updateArtifactText(cfg, id, {
+      markdown: body.markdown,
+      title: typeof body.title === 'string' ? body.title : undefined,
+    });
+    res.json(result);
   }),
 );
 

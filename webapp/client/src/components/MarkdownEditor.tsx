@@ -8,21 +8,29 @@ import { useMemo, useState } from 'react';
 import { marked } from 'marked';
 import { Icon } from './Icon';
 import { apiFormData } from '../lib/api';
+import { updateArtifactContent } from '../lib/artifacts';
 import { toast } from '../lib/toast';
 
 type View = 'write' | 'split' | 'preview';
 
 export default function MarkdownEditor({
   collectionId,
+  editId,
+  initialTitle,
+  initialMarkdown,
   onClose,
   onSaved,
 }: {
   collectionId?: string;
+  /** When set, save updates this existing artifact instead of creating a note. */
+  editId?: string;
+  initialTitle?: string;
+  initialMarkdown?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [title, setTitle] = useState('');
-  const [md, setMd] = useState('# New note\n\nWrite anything in **Markdown**…\n');
+  const [title, setTitle] = useState(initialTitle ?? '');
+  const [md, setMd] = useState(initialMarkdown ?? '# New note\n\nWrite anything in **Markdown**…\n');
   const [view, setView] = useState<View>('split');
   const [busy, setBusy] = useState(false);
 
@@ -42,6 +50,12 @@ export default function MarkdownEditor({
     }
     setBusy(true);
     try {
+      if (editId) {
+        const r = await updateArtifactContent(editId, { markdown: md, title: name });
+        toast(r.embedSkipped ? 'Saved — not re-indexed (embedding quota exceeded)' : 'Saved');
+        onSaved();
+        return;
+      }
       const file = new File([md], `${name.replace(/[\\/:*?"<>|]/g, '-').slice(0, 96)}.md`, {
         type: 'text/markdown',
       });
@@ -51,8 +65,14 @@ export default function MarkdownEditor({
       form.append('kind', 'note');
       form.append('origin', 'upload');
       if (collectionId) form.append('collectionId', collectionId);
-      await apiFormData('/api/corpus/ingest', form);
-      toast(collectionId ? 'Note saved to collection' : 'Note saved');
+      const r = await apiFormData<{ embedSkipped?: boolean }>('/api/corpus/ingest', form);
+      toast(
+        r.embedSkipped
+          ? 'Note saved — not indexed for search (embedding quota exceeded)'
+          : collectionId
+            ? 'Note saved to collection'
+            : 'Note saved',
+      );
       onSaved();
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err));
@@ -97,7 +117,7 @@ export default function MarkdownEditor({
             ))}
           </div>
           <button className="btn btn-primary" disabled={busy} onClick={save}>
-            {busy ? 'Saving…' : 'Save note'}
+            {busy ? 'Saving…' : editId ? 'Save' : 'Save note'}
           </button>
           <button className="icon-btn" onClick={onClose}>
             <Icon id="i-close" />

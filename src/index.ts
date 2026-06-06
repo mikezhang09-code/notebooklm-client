@@ -81,6 +81,7 @@ export type {
   ChatResult,
   ChatCitation,
   ChatWithCitationsResult,
+  ConversationTurn,
 
   // Artifact Generation (low-level)
   ArtifactGenerateOptions,

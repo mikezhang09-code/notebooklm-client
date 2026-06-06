@@ -112,13 +112,34 @@ export async function getDownloadUrl(id: string): Promise<string | undefined> {
 export type ViewPayload =
   | { type: 'pdf'; downloadUrl: string; mimeType?: string }
   | { type: 'office'; officeViewerUrl: string; downloadUrl: string; mimeType?: string }
+  | { type: 'image'; downloadUrl: string; mimeType?: string }
   | { type: 'html'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'text'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'unsupported'; downloadUrl: string; mimeType?: string };
 
-/** Fetch inline-render info for an artifact (pdf/office/html/text/unsupported). */
+/** Fetch inline-render info for an artifact (pdf/office/image/html/text/unsupported). */
 export function getView(id: string): Promise<ViewPayload> {
   return apiGet<ViewPayload>(`/api/corpus/artifacts/${id}/view`);
+}
+
+/** Raw UTF-8 text of a text artifact (for the editor). */
+export function getRawText(id: string): Promise<{ content: string; mimeType: string | null }> {
+  return apiGet(`/api/corpus/artifacts/${id}/raw`);
+}
+
+/** Replace a text artifact's content (re-embeds server-side). */
+export function updateArtifactContent(
+  id: string,
+  input: { markdown: string; title?: string },
+): Promise<{ id: string; chunkCount: number; embedSkipped?: boolean }> {
+  return apiJson(`/api/corpus/artifacts/${id}/content`, input, 'PUT');
+}
+
+/** Whether an item is editable in the markdown editor (not a NotebookLM doc). */
+export function isEditable(item: Item): boolean {
+  if (item.provenance === 'notebooklm') return false;
+  const m = (item.mimeType ?? '').toLowerCase();
+  return item.kind === 'note' || m.includes('markdown') || m === 'text/plain';
 }
 
 export function deleteItem(id: string): Promise<{ ok: boolean }> {
@@ -133,7 +154,7 @@ export function saveFromJob(input: {
   title: string;
   origin?: 'upload' | 'notebooklm';
   collectionId?: string;
-}): Promise<{ id: string }> {
+}): Promise<{ id: string; embedSkipped?: boolean }> {
   return apiJson('/api/corpus/save-from-job', input);
 }
 

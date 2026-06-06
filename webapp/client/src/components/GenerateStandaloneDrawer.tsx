@@ -127,7 +127,7 @@ export default function GenerateStandaloneDrawer({
       return;
     }
     try {
-      await saveFromJob({
+      const r = await saveFromJob({
         jobId: result.jobId,
         filename,
         kind: t.backendKind ?? 'report',
@@ -136,7 +136,13 @@ export default function GenerateStandaloneDrawer({
         collectionId,
       });
       setSaved(true);
-      toast(collectionId ? 'Saved to collection' : 'Saved to library');
+      toast(
+        r.embedSkipped
+          ? 'Saved — not indexed for search (embedding quota exceeded)'
+          : collectionId
+            ? 'Saved to collection'
+            : 'Saved to library',
+      );
       onDone?.();
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err));

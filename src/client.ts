@@ -81,6 +81,7 @@ import type {
   GenerateInNotebookOptions,
   GenerateInNotebookResult,
   ChatWithCitationsResult,
+  ConversationTurn,
 } from './types.js';
 
 export type TransportMode = 'browser' | 'curl-impersonate' | 'tls-client' | 'http' | 'auto';
@@ -428,6 +429,24 @@ export class NotebookClient {
    */
   async listChatThreads(notebookId: string): Promise<string[]> {
     return api.listChatThreads(this.rpc, notebookId);
+  }
+
+  /**
+   * Fetch a notebook's persisted chat history — the conversation turns shown
+   * when you open the chat panel in NotebookLM. Resolves the notebook's default
+   * thread automatically; pass `threadId` to target a specific one.
+   */
+  async getConversationTurns(
+    notebookId: string,
+    options?: { threadId?: string; limit?: number },
+  ): Promise<ConversationTurn[]> {
+    let threadId = options?.threadId;
+    if (!threadId) {
+      const threads = await api.listChatThreads(this.rpc, notebookId);
+      threadId = threads[0];
+    }
+    if (!threadId) return [];
+    return api.getConversationTurns(this.rpc, notebookId, threadId, options?.limit ?? 50);
   }
 
   async listNotebooks(): Promise<NotebookInfo[]> {

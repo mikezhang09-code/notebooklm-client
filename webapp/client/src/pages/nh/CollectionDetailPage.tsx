@@ -261,8 +261,12 @@ function UploadDrawer({
       form.append('kind', 'upload');
       form.append('origin', 'upload');
       form.append('collectionId', collectionId);
-      await apiFormData('/api/corpus/ingest', form);
-      toast('Uploaded to collection');
+      const r = await apiFormData<{ embedSkipped?: boolean }>('/api/corpus/ingest', form);
+      toast(
+        r.embedSkipped
+          ? 'Uploaded — not indexed for search (embedding quota exceeded)'
+          : 'Uploaded to collection',
+      );
       onUploaded();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

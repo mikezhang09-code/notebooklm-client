@@ -37,8 +37,14 @@ export default function UploadDrawer({
       form.append('kind', t.ingestKind);
       form.append('origin', 'upload');
       if (collectionId) form.append('collectionId', collectionId);
-      await apiFormData('/api/corpus/ingest', form);
-      toast(collectionId ? 'Uploaded to collection' : 'Uploaded');
+      const r = await apiFormData<{ embedSkipped?: boolean }>('/api/corpus/ingest', form);
+      toast(
+        r.embedSkipped
+          ? 'Uploaded — stored but not indexed for search (embedding quota exceeded). Re-embed later.'
+          : collectionId
+            ? 'Uploaded to collection'
+            : 'Uploaded',
+      );
       onUploaded();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

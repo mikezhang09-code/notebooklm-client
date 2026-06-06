@@ -25,6 +25,7 @@ import {
   parseStudioConfig,
   parseQuota,
   parseResearchResults,
+  parseConversationTurns,
 } from './parser.js';
 import type { RpcCaller } from './download.js';
 import type {
@@ -38,6 +39,7 @@ import type {
   ArtifactGenerateOptions,
   LegacyArtifactOptions,
   ChatWithCitationsResult,
+  ConversationTurn,
 } from './types.js';
 
 // Re-export for convenience
@@ -71,6 +73,27 @@ export async function listChatThreads(
     `/notebook/${notebookId}`,
   );
   return parseListChatThreads(raw);
+}
+
+/** Config array NotebookLM sends with the conversation-turns request. */
+const CONVERSATION_CONFIG = [1, null, null, null, null, null, null, null, null, null, [1]];
+
+/**
+ * Fetch a thread's persisted conversation turns (the chat history shown when
+ * you open a notebook's chat panel). Returns turns in chronological order.
+ */
+export async function getConversationTurns(
+  callRpc: RpcCaller,
+  notebookId: string,
+  threadId: string,
+  limit = 50,
+): Promise<ConversationTurn[]> {
+  const raw = await callRpc(
+    NB_RPC.GET_CONVERSATION_TURNS,
+    [[2, null, null, CONVERSATION_CONFIG], null, null, threadId, limit],
+    `/notebook/${notebookId}`,
+  );
+  return parseConversationTurns(raw);
 }
 
 export async function listNotebooks(callRpc: RpcCaller): Promise<NotebookInfo[]> {

@@ -65,6 +65,32 @@ export interface IngestResult {
    * the existing row without re-uploading / re-embedding.
    */
   alreadyIngested?: boolean;
+  /**
+   * True iff embeddings could not be generated (e.g. Gemini quota 429), so the
+   * artifact was stored WITHOUT chunks — it's viewable/downloadable but not yet
+   * searchable. Re-embed later (npm run reembed) to index it.
+   */
+  embedSkipped?: boolean;
+  /** The embedding error message, when embedSkipped is true. */
+  embedError?: string;
+}
+
+/**
+ * Embed chunks, but never throw: on failure (e.g. quota 429) return an empty
+ * vector set + the error so callers can store the artifact without chunks
+ * instead of failing the whole upload.
+ */
+async function safeEmbed(
+  cfg: CorpusConfig,
+  texts: string[],
+): Promise<{ vectors: number[][]; error?: string }> {
+  if (texts.length === 0) return { vectors: [] };
+  try {
+    const vectors = await embedTexts(cfg, texts, 'SEARCH_DOCUMENT');
+    return { vectors };
+  } catch (err) {
+    return { vectors: [], error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**
@@ -184,7 +210,9 @@ export async function ingestArtifactWith(
 
   // 2) Upload to Object Storage + embed chunks in parallel.
   //    (Both are network-bound; overlapping saves ~1-2s per ingest.)
-  const [putResult, vectors] = await Promise.all([
+  //    Embedding is resilient: if it fails (e.g. Gemini quota 429) we still
+  //    store the artifact — just without chunks (not searchable until re-embed).
+  const [putResult, embed] = await Promise.all([
     putObject(
       cfg,
       objectName,
@@ -192,20 +220,14 @@ export async function ingestArtifactWith(
       input.mimeType ?? 'application/octet-stream',
       input.buffer.length,
     ),
-    chunks.length > 0
-      ? embedTexts(
-          cfg,
-          chunks.map((c) => c.text),
-          'SEARCH_DOCUMENT',
-        )
-      : Promise.resolve([] as number[][]),
+    safeEmbed(cfg, chunks.map((c) => c.text)),
   ]);
   void putResult;
 
-  if (vectors.length !== chunks.length) {
-    throw new Error(
-      `embed count mismatch: ${vectors.length} vectors for ${chunks.length} chunks`,
-    );
+  const vectors = embed.vectors;
+  const storeChunks = !embed.error && vectors.length === chunks.length && chunks.length > 0;
+  if (embed.error) {
+    console.warn(`[corpus] embedding failed — storing ${input.kind} without chunks: ${embed.error}`);
   }
 
   // 3) DB transaction: artifact + chunks.
@@ -249,7 +271,7 @@ export async function ingestArtifactWith(
       { autoCommit: false },
     );
 
-    if (chunks.length > 0) {
+    if (storeChunks) {
       const rows = chunks.map((c, i) => ({
         cid: newId(),
         aid: id,
@@ -340,9 +362,10 @@ export async function ingestArtifactWith(
     id,
     objectName,
     bucket: cfg.ociBucket,
-    chunkCount: chunks.length,
+    chunkCount: storeChunks ? chunks.length : 0,
     textPreview: rawText.slice(0, 200),
     sizeBytes: input.buffer.length,
+    ...(embed.error ? { embedSkipped: true, embedError: embed.error } : {}),
   };
 }
 
@@ -493,16 +516,14 @@ export async function saveChatArtifact(
   //    character, even though the bytes on disk are pure UTF-8. Seen in
   //    practice with Chinese prompts saved from the Chat page.
   const chatMime = 'text/markdown; charset=utf-8';
-  const [, vectors] = await Promise.all([
+  const [, embed] = await Promise.all([
     putObject(cfg, objectName, buffer, chatMime, buffer.length),
-    chunks.length > 0
-      ? embedTexts(cfg, chunks.map((c) => c.text), 'SEARCH_DOCUMENT')
-      : Promise.resolve([] as number[][]),
+    safeEmbed(cfg, chunks.map((c) => c.text)),
   ]);
-  if (vectors.length !== chunks.length) {
-    throw new Error(
-      `embed count mismatch: ${vectors.length} vectors for ${chunks.length} chunks`,
-    );
+  const vectors = embed.vectors;
+  const storeChunks = !embed.error && vectors.length === chunks.length && chunks.length > 0;
+  if (embed.error) {
+    console.warn(`[corpus] embedding failed on saved chat — storing without chunks: ${embed.error}`);
   }
 
   // 5) DB transaction: upsert artifact row + replace chunks.
@@ -552,7 +573,7 @@ export async function saveChatArtifact(
       );
     }
 
-    if (chunks.length > 0) {
+    if (storeChunks) {
       const rows = chunks.map((c, i) => ({
         cid: newId(),
         aid: artifactId,
@@ -590,7 +611,94 @@ export async function saveChatArtifact(
   return {
     id: artifactId,
     sessionId: input.sessionId,
-    chunkCount: chunks.length,
+    chunkCount: storeChunks ? chunks.length : 0,
     created: !existing,
+  };
+}
+
+// ───────────────────────────────────────────── edit a text artifact (notes) ──
+
+/**
+ * Replace the text content of an existing artifact (notes + markdown reports).
+ * Overwrites its Object Storage blob in place, re-chunks + re-embeds, and
+ * swaps the chunk rows. Used by the in-app markdown editor.
+ */
+export async function updateArtifactText(
+  cfg: CorpusConfig,
+  id: string,
+  input: { title?: string; markdown: string },
+): Promise<{ id: string; chunkCount: number; embedSkipped?: boolean; embedError?: string }> {
+  const row = await withConnection(cfg, async (conn) => {
+    const r = await conn.execute<{ OBJECT_NAME: string; MIME_TYPE: string | null }>(
+      `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+      { id },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return r.rows?.[0];
+  });
+  if (!row) throw new Error('artifact not found');
+
+  const objectName = row.OBJECT_NAME;
+  const mime = row.MIME_TYPE ?? 'text/markdown; charset=utf-8';
+  const buffer = Buffer.from(input.markdown, 'utf8');
+  const chunks = chunkText(input.markdown);
+
+  const [, embed] = await Promise.all([
+    putObject(cfg, objectName, buffer, mime, buffer.length),
+    safeEmbed(cfg, chunks.map((c) => c.text)),
+  ]);
+  const vectors = embed.vectors;
+  const storeChunks = !embed.error && vectors.length === chunks.length && chunks.length > 0;
+  if (embed.error) {
+    console.warn(`[corpus] embedding failed on update — keeping content without chunks: ${embed.error}`);
+  }
+
+  await withConnection(cfg, async (conn) => {
+    await conn.execute(
+      `UPDATE artifacts
+          SET title = COALESCE(:t, title), size_bytes = :sz, updated_at = SYSTIMESTAMP
+        WHERE id = :id`,
+      { t: input.title?.slice(0, 512) ?? null, sz: buffer.length, id },
+      { autoCommit: false },
+    );
+    await conn.execute(`DELETE FROM artifact_chunks WHERE artifact_id = :aid`, { aid: id }, { autoCommit: false });
+    if (storeChunks) {
+      const rows = chunks.map((c, i) => ({
+        cid: newId(),
+        aid: id,
+        ord: c.ordinal,
+        txt: c.text,
+        cs: c.charStart,
+        ce: c.charEnd,
+        tc: c.tokenEstimate,
+        emb: Float32Array.from(vectors[i] as number[]),
+      }));
+      await conn.executeMany(
+        `INSERT INTO artifact_chunks
+           (id, artifact_id, ordinal, text, char_start, char_end, token_count, embedding)
+         VALUES (:cid, :aid, :ord, :txt, :cs, :ce, :tc, :emb)`,
+        rows as unknown as oracledb.BindParameters[],
+        {
+          bindDefs: {
+            cid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
+            aid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
+            ord: { type: oracledb.DB_TYPE_NUMBER },
+            txt: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 32000 },
+            cs: { type: oracledb.DB_TYPE_NUMBER },
+            ce: { type: oracledb.DB_TYPE_NUMBER },
+            tc: { type: oracledb.DB_TYPE_NUMBER },
+            emb: { type: oracledb.DB_TYPE_VECTOR },
+          },
+          autoCommit: false,
+        },
+      );
+    }
+    await conn.commit();
+  });
+
+  return {
+    id,
+    chunkCount: storeChunks ? chunks.length : 0,
+    ...(embed.error ? { embedSkipped: true, embedError: embed.error } : {}),
   };
 }

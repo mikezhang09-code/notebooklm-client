@@ -30,8 +30,17 @@ async function main() {
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
 
-    const rows = result.rows || [];
-    console.log(`Found ${rows.length} artifacts to process.`);
+    let rows = result.rows || [];
+    // Optional `--limit N` to test a few artifacts before doing the whole corpus.
+    const limitArg = process.argv.indexOf('--limit');
+    if (limitArg !== -1) {
+      const n = parseInt(process.argv[limitArg + 1] ?? '', 10);
+      if (Number.isFinite(n) && n > 0) {
+        rows = rows.slice(0, n);
+        console.log(`(--limit ${n}) processing first ${rows.length} artifacts only.`);
+      }
+    }
+    console.log(`Found ${result.rows?.length ?? 0} artifacts missing chunks; processing ${rows.length}.`);
 
     for (const row of rows) {
       console.log(`\nRe-embedding: ${row.TITLE}`);
@@ -59,12 +68,12 @@ async function main() {
         let retries = 0;
         while (retries < 5) {
           try {
-            console.log(`  -> Generating ${chunks.length} vectors via Gemini (Attempt ${retries + 1})...`);
+            console.log(`  -> Generating ${chunks.length} vectors via ${cfg.embeddingProvider} (Attempt ${retries + 1})...`);
             vectors = await embedTexts(cfg, chunks.map(c => c.text), 'SEARCH_DOCUMENT');
             break; // Success!
           } catch (e: any) {
             if (e.message && e.message.includes('429')) {
-              console.log('  -> Rate limited by Gemini! Sleeping for 35 seconds...');
+              console.log('  -> Rate limited! Sleeping for 35 seconds...');
               await new Promise(r => setTimeout(r, 35000));
               retries++;
             } else {

@@ -12,6 +12,7 @@ import oracledb from 'oracledb';
 import type { CorpusConfig } from '../config.js';
 import { withConnection } from './db.js';
 import { embedTextsGemini } from './gemini.js';
+import { embedTextsVoyage } from './voyage.js';
 
 /** Max inputs per embed call for cohere multilingual v3. */
 const EMBED_BATCH_SIZE = 96;
@@ -69,6 +70,10 @@ export async function embedTexts(
 
   if (cfg.embeddingProvider === 'gemini') {
     return embedTextsGemini(cfg, texts);
+  }
+
+  if (cfg.embeddingProvider === 'voyage') {
+    return embedTextsVoyage(cfg, texts, inputType);
   }
 
   return embedTextsOci(cfg, texts, inputType);
@@ -295,7 +300,9 @@ export async function genaiHealthCheck(cfg: CorpusConfig): Promise<{
         ? cfg.dbEmbedModel
         : cfg.embeddingProvider === 'gemini'
           ? cfg.geminiEmbedModel
-          : cfg.ociGenAiModel;
+          : cfg.embeddingProvider === 'voyage'
+            ? cfg.voyageModel
+            : cfg.ociGenAiModel;
 
     return {
       ok: dim > 0,

@@ -114,6 +114,15 @@ function mimeFromExt(ext: string): string {
       return 'audio/mp4';
     case '.mp4':
       return 'video/mp4';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
     default:
       return 'application/octet-stream';
   }

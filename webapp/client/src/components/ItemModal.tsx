@@ -5,9 +5,10 @@
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { describe, SOURCES } from '../lib/registry';
-import { getDownloadUrl, deleteItem, shareItem, type Item } from '../lib/artifacts';
+import { getDownloadUrl, deleteItem, shareItem, getRawText, isEditable, type Item } from '../lib/artifacts';
 import { toast } from '../lib/toast';
 import Viewer from './Viewer';
+import MarkdownEditor from './MarkdownEditor';
 
 function fmtSize(b: number | null): string {
   if (!b) return '—';
@@ -30,6 +31,17 @@ export default function ItemModal({
   const [downloadUrl, setDownloadUrl] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [viewing, setViewing] = useState(false);
+  const [editContent, setEditContent] = useState<string | null>(null);
+  const editable = isEditable(item);
+
+  async function handleEdit() {
+    try {
+      const { content } = await getRawText(item.id);
+      setEditContent(content);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   useEffect(() => {
     getDownloadUrl(item.id).then(setDownloadUrl).catch(() => setDownloadUrl(undefined));
@@ -105,6 +117,11 @@ export default function ItemModal({
           <button className="btn btn-primary" onClick={() => setViewing(true)}>
             <Icon id="i-grid" /> View
           </button>
+          {editable && (
+            <button className="btn btn-soft" onClick={handleEdit}>
+              <Icon id="i-doc" /> Edit
+            </button>
+          )}
           <a
             className="btn btn-soft"
             href={downloadUrl ?? '#'}
@@ -139,6 +156,20 @@ export default function ItemModal({
       </div>
 
       {viewing && <Viewer id={item.id} title={item.title} tc={t.color} onClose={() => setViewing(false)} />}
+
+      {editContent !== null && (
+        <MarkdownEditor
+          editId={item.id}
+          initialTitle={item.title}
+          initialMarkdown={editContent}
+          onClose={() => setEditContent(null)}
+          onSaved={() => {
+            setEditContent(null);
+            onDeleted?.();
+            onClose();
+          }}
+        />
+      )}
     </div>
   );
 }

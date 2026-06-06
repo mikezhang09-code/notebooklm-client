@@ -3,7 +3,7 @@
  */
 
 import { parseEnvelopes } from './boq-parser.js';
-import type { NotebookInfo, SourceInfo, ArtifactInfo, StudioConfig, StudioAudioType, StudioDocType, AccountInfo, ResearchResult, ChatCitation, ChatWithCitationsResult } from './types.js';
+import type { NotebookInfo, SourceInfo, ArtifactInfo, StudioConfig, StudioAudioType, StudioDocType, AccountInfo, ResearchResult, ChatCitation, ChatWithCitationsResult, ConversationTurn } from './types.js';
 type QuotaInfo = AccountInfo;
 
 // ── Helpers ──
@@ -68,6 +68,40 @@ export function parseListChatThreads(raw: string): string[] {
     }
   }
   return ids;
+}
+
+/**
+ * Parse a notebook's persisted conversation history (GET_CONVERSATION_TURNS).
+ *
+ * Each turn is `[id, [tsSec, tsNanos], role, ...]` where role 1 = user (text at
+ * index 3) and role 2 = assistant (text at `[4][0][0]`). NotebookLM returns
+ * turns newest-first, with the assistant reply before its user prompt — so we
+ * reverse to chronological order for display.
+ */
+export function parseConversationTurns(raw: string): ConversationTurn[] {
+  const inner = extractInner(raw);
+  const turns = getArray(inner, 0);
+  if (!turns) return [];
+  const out: ConversationTurn[] = [];
+  for (const t of turns) {
+    if (!Array.isArray(t)) continue;
+    const id = typeof t[0] === 'string' ? t[0] : '';
+    const ts = Array.isArray(t[1]) && typeof t[1][0] === 'number' ? (t[1][0] as number) : 0;
+    const roleCode = t[2];
+    const role: 'user' | 'assistant' = roleCode === 1 ? 'user' : 'assistant';
+    let text = '';
+    if (roleCode === 1) {
+      text = typeof t[3] === 'string' ? t[3] : '';
+    } else {
+      const a = t[4];
+      if (Array.isArray(a) && Array.isArray(a[0]) && typeof a[0][0] === 'string') {
+        text = a[0][0];
+      }
+    }
+    if (!text) continue;
+    out.push({ id, role, text, at: ts ? new Date(ts * 1000).toISOString() : '' });
+  }
+  return out.reverse();
 }
 
 export function parseListNotebooks(raw: string): NotebookInfo[] {

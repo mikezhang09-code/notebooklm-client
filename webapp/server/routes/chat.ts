@@ -10,6 +10,27 @@ import { withClient } from '../lib/client-factory.js';
 
 export const chatRouter = Router();
 
+/**
+ * GET /api/chat/history?notebookId=…&limit=50
+ * Returns the notebook's persisted conversation turns (chronological).
+ */
+chatRouter.get(
+  '/history',
+  asyncHandler(async (req, res) => {
+    const session = parseSessionHeader(req);
+    const notebookId = typeof req.query['notebookId'] === 'string' ? req.query['notebookId'] : '';
+    if (!notebookId) {
+      res.status(400).json({ error: 'notebookId is required' });
+      return;
+    }
+    const limit = Number.parseInt(String(req.query['limit'] ?? '50'), 10) || 50;
+    const turns = await withClient({ session }, (client) =>
+      client.getConversationTurns(notebookId, { limit }),
+    );
+    res.json({ turns });
+  }),
+);
+
 interface ChatBody {
   notebookId: string;
   question: string;

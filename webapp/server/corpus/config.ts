@@ -12,7 +12,7 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-export type EmbeddingProvider = 'oci' | 'database' | 'gemini';
+export type EmbeddingProvider = 'oci' | 'database' | 'gemini' | 'voyage';
 export type ChatProvider = 'oci' | 'gemini' | 'mimo' | 'disabled';
 
 export interface CorpusConfig {
@@ -68,6 +68,20 @@ export interface CorpusConfig {
    * Used when embeddingProvider='gemini'.
    */
   geminiEmbedModel?: string;
+  /** Voyage AI API key. Required when embeddingProvider='voyage'. */
+  voyageApiKey?: string;
+  /**
+   * Voyage embedding model. Default 'voyage-4' — the voyage-4 family currently
+   * carries the 200M-token free tier (the voyage-3.x models have 0 free quota).
+   * Options: 'voyage-4' (balanced), 'voyage-4-large' (best quality),
+   * 'voyage-4-lite' (fastest/cheapest). All output 1024-dim by default.
+   */
+  voyageModel: string;
+  /**
+   * Voyage output dimension (default 1024). Must match the DB VECTOR column
+   * dimension — changing it requires re-creating the column + re-embedding.
+   */
+  voyageEmbedDim: number;
 
   // ── Chat provider ───────────────────────────────────────────────────────
   /**
@@ -221,16 +235,24 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
       ? 'database'
       : embProvRaw === 'gemini'
         ? 'gemini'
-        : 'oci';
+        : embProvRaw === 'voyage'
+          ? 'voyage'
+          : 'oci';
   (partial as CorpusConfig).embeddingProvider = embProv;
   if (embProv === 'database') {
     const dbModel = envOrNull('DB_EMBED_MODEL');
     if (dbModel) (partial as CorpusConfig).dbEmbedModel = dbModel;
   }
   if (embProv === 'gemini') {
-    (partial as CorpusConfig).geminiEmbedModel = 
+    (partial as CorpusConfig).geminiEmbedModel =
       envOrNull('GEMINI_EMBED_MODEL') ?? 'gemini-embedding-2';
   }
+  // Voyage AI — generous free tier; 1024-dim by default.
+  (partial as CorpusConfig).voyageApiKey = envOrNull('VOYAGE_API_KEY') ?? undefined;
+  (partial as CorpusConfig).voyageModel = envOrNull('VOYAGE_MODEL') ?? 'voyage-4';
+  const voyDimRaw = envOrNull('VOYAGE_EMBED_DIM');
+  const voyDim = voyDimRaw ? parseInt(voyDimRaw, 10) : NaN;
+  (partial as CorpusConfig).voyageEmbedDim = Number.isFinite(voyDim) && voyDim > 0 ? voyDim : 1024;
 
 
   // ── Chat provider ─────────────────────────────────────────────────────
@@ -296,7 +318,13 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
     `[corpus] enabled — region=${cached.ociRegion} bucket=${cached.ociBucket} ` +
       `db=${cached.oracleConnectString}` +
       ` embed=${cached.embeddingProvider}` +
-      (cached.embeddingProvider === 'database' ? `(${cached.dbEmbedModel ?? 'BGE_M3_MODEL'})` : `(${cached.ociGenAiModel})`) +
+      (cached.embeddingProvider === 'database'
+        ? `(${cached.dbEmbedModel ?? 'BGE_M3_MODEL'})`
+        : cached.embeddingProvider === 'gemini'
+          ? `(${cached.geminiEmbedModel})`
+          : cached.embeddingProvider === 'voyage'
+            ? `(${cached.voyageModel}/${cached.voyageEmbedDim}d)`
+            : `(${cached.ociGenAiModel})`) +
       ` chat=${cached.chatProvider}` +
       (cached.chatProvider === 'oci' && cached.ociGenAiChatModel ? `(${cached.ociGenAiChatModel})` : '') +
       (cached.chatProvider === 'gemini' ? `(${cached.geminiModel})` : '') +
