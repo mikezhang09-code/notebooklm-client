@@ -193,8 +193,17 @@ notebooksRouter.post(
     if (!cfg) {
       corpusStatus = 'disabled';
     } else {
-      const corpusKind = typeLabelToCorpusKind(result.typeLabel);
       const primary = pickPrimaryFile(result.files);
+      let corpusKind = typeLabelToCorpusKind(result.typeLabel);
+      // NotebookLM uses one artifact type for both quiz and flashcards, so the
+      // typeLabel comes back as 'quiz'. Disambiguate via the saved filename
+      // (saveQuizHtml prefixes flashcards as "flashcards_…") or the title.
+      if (
+        corpusKind === 'quiz' &&
+        /flashcard/i.test(`${primary ? basename(primary) : ''} ${body.artifactTitle ?? ''}`)
+      ) {
+        corpusKind = 'flashcards';
+      }
       if (!corpusKind) {
         corpusStatus = 'skipped_kind';
       } else if (!primary) {

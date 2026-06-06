@@ -64,6 +64,7 @@ const ALLOWED_KINDS: ArtifactKind[] = [
   'slides',
   'data_table',
   'upload',
+  'note',
   'qa',
 ];
 const ALLOWED_ORIGINS: ArtifactOrigin[] = ['notebooklm', 'upload'];
@@ -1419,6 +1420,14 @@ corpusRouter.post(
       typeof body['notebookId'] === 'string' && body['notebookId'].trim().length > 0
         ? body['notebookId'].trim()
         : undefined;
+    // Standalone generations (no notebook) save as free-form uploads; an
+    // optional collectionId files them under a collection.
+    const origin: ArtifactOrigin =
+      body['origin'] === 'upload' ? 'upload' : notebookId ? 'notebooklm' : 'upload';
+    const collectionId =
+      typeof body['collectionId'] === 'string' && body['collectionId'].trim().length > 0
+        ? body['collectionId'].trim()
+        : undefined;
 
     if (!jobId) { res.status(400).json({ error: 'jobId is required' }); return; }
     if (!filename) { res.status(400).json({ error: 'filename is required' }); return; }
@@ -1488,10 +1497,11 @@ corpusRouter.post(
       buffer,
       title,
       kind,
-      origin: 'notebooklm',
+      origin,
       mimeType,
       filename: safeName,
       notebookId,
+      collectionId,
     });
     res.status(201).json(result);
   }),

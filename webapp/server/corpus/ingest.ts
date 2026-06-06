@@ -31,6 +31,7 @@ export type ArtifactKind =
   | 'slides'
   | 'data_table'
   | 'upload'
+  | 'note'
   | 'qa';
 
 export type ArtifactOrigin = 'notebooklm' | 'upload';
