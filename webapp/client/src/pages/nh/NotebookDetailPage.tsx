@@ -4,6 +4,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { Icon } from '../../components/Icon';
 import GenerateDrawer, { type DrawerSource } from '../../components/GenerateDrawer';
 import ItemModal from '../../components/ItemModal';
@@ -646,6 +648,36 @@ interface ChatMsg {
   cites?: string[];
 }
 
+/**
+ * Render an assistant answer as user-friendly HTML: parse the Markdown the
+ * model emits (headings, bold, lists, rules) and turn inline `[1, 2]` /
+ * `[13-15]` citation markers into small numbered chips, the way NotebookLM
+ * displays them. Mirrors the markdown rendering already used by the note
+ * editor + artifact viewer.
+ */
+function renderAnswer(text: string): string {
+  let html: string;
+  try {
+    html = marked.parse(text, { async: false }) as string;
+  } catch {
+    return text.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c);
+  }
+  // Replace bracketed citation lists ([1, 2], [2, 5-7], [13-15]) with chips.
+  // Restricted to digit/comma/space/hyphen/en-dash content so prose like
+  // "[note]" or markdown links are left untouched.
+  html = html.replace(/\[(\d[\d\s,–-]*)\]/g, (whole, grp: string) => {
+    const parts = grp
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length === 0) return whole;
+    return parts.map((p) => `<sup class="cite-chip">${p}</sup>`).join('');
+  });
+  // The answer is model output that can echo source HTML or be steered by
+  // prompt injection, so sanitize before injecting via dangerouslySetInnerHTML.
+  return DOMPurify.sanitize(html);
+}
+
 function ChatTab({ notebookId, sourceCount }: { notebookId: string; sourceCount: number }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -726,7 +758,14 @@ function ChatTab({ notebookId, sourceCount }: { notebookId: string; sourceCount:
           msgs.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
               <div className="bubble">
-                {m.text}
+                {m.role === 'bot' ? (
+                  <div
+                    className="md-body bubble-md"
+                    dangerouslySetInnerHTML={{ __html: renderAnswer(m.text) }}
+                  />
+                ) : (
+                  m.text
+                )}
                 {m.cites && m.cites.length > 0 && (
                   <div className="cites">
                     {m.cites.map((c, j) => (

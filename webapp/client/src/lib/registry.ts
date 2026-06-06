@@ -244,6 +244,22 @@ export function describe(kind: string, mimeType?: string | null, title?: string)
 }
 
 /**
+ * Pick the best-fit ingest `kind` for a file being uploaded, from its MIME type
+ * (falling back to the filename extension). Lets multi-file upload default each
+ * file to "what fits" — a CSV → data_table, an mp3 → audio, a PDF → report —
+ * instead of forcing everything to a single section's type.
+ */
+export function detectIngestKind(mimeType?: string | null, name?: string): string {
+  return TYPE[typeKeyFor('upload', mimeType, name)].ingestKind;
+}
+
+/** Kinds a user can pick when uploading or re-typing an artifact (label + stored kind). */
+export const UPLOAD_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: 'upload', label: 'File (auto)' },
+  ...TYPES.filter((t) => t.key !== 'mind').map((t) => ({ value: t.ingestKind, label: t.label })),
+];
+
+/**
  * Bucket any artifact into one of the 9 output-type keys for Free Forms
  * grouping. Real kinds map directly; uploads map to the nearest output type by
  * file type (e.g. a CSV upload → data table, an mp3 upload → audio, documents

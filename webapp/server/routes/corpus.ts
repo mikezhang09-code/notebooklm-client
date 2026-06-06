@@ -1077,7 +1077,12 @@ const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 /**
  * PATCH /api/corpus/artifacts/:id
  *
- * Body (all optional): { title?: string, tags?: string[] }
+ * Body (all optional): { title?, tags?, kind?, description? }
+ *   title       1..512 chars
+ *   tags        string[] (lowercased, deduped server-side)
+ *   kind        one of ALLOWED_KINDS — re-types the artifact (changes how it's
+ *               classified + which Free Forms section it appears in)
+ *   description free text stored in metadata.description ('' clears it)
  * Updates only the fields provided. 404 if the row doesn't exist.
  */
 corpusRouter.patch(
@@ -1093,7 +1098,12 @@ corpusRouter.patch(
       res.status(400).json({ error: 'invalid artifact id' });
       return;
     }
-    const body = (req.body ?? {}) as { title?: unknown; tags?: unknown };
+    const body = (req.body ?? {}) as {
+      title?: unknown;
+      tags?: unknown;
+      kind?: unknown;
+      description?: unknown;
+    };
 
     const updates: string[] = [];
     const binds: Record<string, unknown> = { id };
@@ -1115,13 +1125,54 @@ corpusRouter.patch(
       updates.push('tags = :tags');
       binds['tags'] = JSON.stringify(cleaned);
     }
-    if (updates.length === 0) {
+    if (typeof body.kind === 'string') {
+      const k = body.kind.trim() as ArtifactKind;
+      if (!ALLOWED_KINDS.includes(k)) {
+        res.status(400).json({ error: `kind must be one of: ${ALLOWED_KINDS.join(', ')}` });
+        return;
+      }
+      updates.push('kind = :kind');
+      binds['kind'] = k;
+    }
+    // Description lives in the metadata JSON column, so it needs a
+    // read-modify-write of the existing metadata rather than a plain SET.
+    const setDescription = typeof body.description === 'string';
+
+    if (updates.length === 0 && !setDescription) {
       res.status(400).json({ error: 'no updatable fields supplied' });
       return;
     }
-    updates.push('updated_at = SYSTIMESTAMP');
 
     const rowsAffected = await withConnection(cfg, async (conn) => {
+      if (setDescription) {
+        const sel = await conn.execute<{ METADATA: unknown }>(
+          `SELECT metadata FROM artifacts WHERE id = :id`,
+          { id },
+          { outFormat: oracledb.OUT_FORMAT_OBJECT },
+        );
+        const existing = sel.rows?.[0];
+        if (!existing) return 0; // row missing → 404 below
+        let meta: Record<string, unknown> = {};
+        const raw = existing.METADATA;
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          meta = raw as Record<string, unknown>;
+        } else if (typeof raw === 'string') {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              meta = parsed as Record<string, unknown>;
+            }
+          } catch {
+            /* keep meta = {} */
+          }
+        }
+        const desc = (body.description as string).trim().slice(0, 2000);
+        if (desc) meta['description'] = desc;
+        else delete meta['description'];
+        updates.push('metadata = :meta');
+        binds['meta'] = JSON.stringify(meta);
+      }
+      updates.push('updated_at = SYSTIMESTAMP');
       const r = await conn.execute(
         `UPDATE artifacts SET ${updates.join(', ')} WHERE id = :id`,
         binds as oracledb.BindParameters,

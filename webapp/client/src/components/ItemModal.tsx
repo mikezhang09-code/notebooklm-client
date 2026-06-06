@@ -9,6 +9,7 @@ import { getDownloadUrl, deleteItem, shareItem, getRawText, isEditable, type Ite
 import { toast } from '../lib/toast';
 import Viewer from './Viewer';
 import MarkdownEditor from './MarkdownEditor';
+import EditItemDrawer from './EditItemDrawer';
 
 function fmtSize(b: number | null): string {
   if (!b) return '—';
@@ -32,7 +33,10 @@ export default function ItemModal({
   const [busy, setBusy] = useState(false);
   const [viewing, setViewing] = useState(false);
   const [editContent, setEditContent] = useState<string | null>(null);
+  const [editingDetails, setEditingDetails] = useState(false);
   const editable = isEditable(item);
+  // NotebookLM-sourced artifacts are managed upstream — details aren't editable.
+  const detailsEditable = item.provenance !== 'notebooklm';
 
   async function handleEdit() {
     try {
@@ -107,6 +111,12 @@ export default function ItemModal({
             <dd>{src.label}</dd>
             <dt>From</dt>
             <dd>{item.from ?? '—'}</dd>
+            {item.description && (
+              <>
+                <dt>Description</dt>
+                <dd>{item.description}</dd>
+              </>
+            )}
             <dt>Created</dt>
             <dd>{new Date(item.createdAt).toLocaleString()}</dd>
             <dt>Size</dt>
@@ -120,6 +130,11 @@ export default function ItemModal({
           {editable && (
             <button className="btn btn-soft" onClick={handleEdit}>
               <Icon id="i-doc" /> Edit
+            </button>
+          )}
+          {detailsEditable && (
+            <button className="btn btn-soft" onClick={() => setEditingDetails(true)}>
+              <Icon id="i-gear" /> Details
             </button>
           )}
           <a
@@ -156,6 +171,19 @@ export default function ItemModal({
       </div>
 
       {viewing && <Viewer id={item.id} title={item.title} tc={t.color} onClose={() => setViewing(false)} />}
+
+      {editingDetails && (
+        <EditItemDrawer
+          id={item.id}
+          tc={t.color}
+          onClose={() => setEditingDetails(false)}
+          onSaved={() => {
+            setEditingDetails(false);
+            onDeleted?.();
+            onClose();
+          }}
+        />
+      )}
 
       {editContent !== null && (
         <MarkdownEditor
