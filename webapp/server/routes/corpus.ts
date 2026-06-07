@@ -652,38 +652,39 @@ function parseNotebookLMDataTable(parsed: unknown): string | null {
   }
 }
 
+interface MindNode {
+  name: string;
+  children: MindNode[];
+}
+
 /**
- * Render a NotebookLM mind-map node tree ({ name, children: [...] }) as a
- * nested HTML list. Returns null when the value isn't a mind-map tree, so the
- * caller can fall back to table/text rendering.
+ * Normalise a NotebookLM mind-map node tree ({ name, children|nodes: [...] })
+ * into a clean { name, children } shape. Returns null when the value isn't a
+ * mind-map tree, so the caller can fall back to table/text rendering. The
+ * client renders this tree as an interactive, pan/zoomable diagram.
  */
-function mindMapToHtml(parsed: unknown): string | null {
+function mindMapToTree(parsed: unknown): MindNode | null {
   const isNode = (v: unknown): v is { name?: unknown; children?: unknown; nodes?: unknown } =>
     typeof v === 'object' && v !== null && !Array.isArray(v);
-  if (!isNode(parsed)) return null;
-  const childrenKey = Array.isArray(parsed.children)
-    ? 'children'
-    : Array.isArray(parsed.nodes)
-      ? 'nodes'
-      : null;
-  // Require a name plus a children/nodes array — the mind-map shape.
-  if (typeof parsed.name !== 'string' || !childrenKey) return null;
 
-  const renderNode = (node: unknown): string => {
-    if (!isNode(node)) return '';
-    const name = typeof node.name === 'string' ? _esc(node.name) : '';
-    const kids = Array.isArray(node.children)
+  const normalize = (node: unknown): MindNode | null => {
+    if (!isNode(node)) return null;
+    const name = typeof node.name === 'string' ? node.name : '';
+    const kidsRaw = Array.isArray(node.children)
       ? node.children
       : Array.isArray(node.nodes)
         ? node.nodes
         : [];
-    const childHtml = kids.length
-      ? `<ul>${kids.map((k) => renderNode(k)).join('')}</ul>`
-      : '';
-    return `<li><span class="mm-node">${name}</span>${childHtml}</li>`;
+    const children = kidsRaw.map(normalize).filter((n): n is MindNode => n !== null);
+    if (!name && children.length === 0) return null;
+    return { name, children };
   };
 
-  return `<div class="mindmap-tree"><ul class="mm-root">${renderNode(parsed)}</ul></div>`;
+  if (!isNode(parsed)) return null;
+  const hasChildren = Array.isArray(parsed.children) || Array.isArray(parsed.nodes);
+  // Require a name plus a children/nodes array — the mind-map shape.
+  if (typeof parsed.name !== 'string' || !hasChildren) return null;
+  return normalize(parsed);
 }
 
 /**
@@ -879,10 +880,14 @@ corpusRouter.get(
       try { parsed = JSON.parse(text); } catch { parsed = null; }
 
       if (parsed !== null) {
-        // Mind maps ({name, children}) render as a nested tree; other JSON
-        // falls back to the table strategies, then raw text.
-        const treeHtml = mindMapToHtml(parsed);
-        const tableHtml = treeHtml ?? anyJsonToHtml(parsed);
+        // Mind maps ({name, children}) render as an interactive tree diagram;
+        // other JSON falls back to the table strategies, then raw text.
+        const tree = mindMapToTree(parsed);
+        if (tree) {
+          res.json({ type: 'mindmap', tree, ...base });
+          return;
+        }
+        const tableHtml = anyJsonToHtml(parsed);
         if (tableHtml) {
           res.json({ type: 'html', content: tableHtml, ...base });
         } else {
