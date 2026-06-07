@@ -90,7 +90,7 @@ function buildTree(node: MindNode, depth: number, id: string): LNode {
     depth,
     x: 0,
     y: 0,
-    children: node.children.map((c, i) => buildTree(c, depth + 1, `${id}.${i}`)),
+    children: (node.children ?? []).map((c, i) => buildTree(c, depth + 1, `${id}.${i}`)),
   };
 }
 
@@ -110,8 +110,8 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() =>
     defaultCollapsed(root, new Set()),
   );
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: MARGIN, y: MARGIN });
+  // Single transform state (zoom + pan) so updates stay pure — no nested setters.
+  const [vt, setVt] = useState({ z: 1, x: MARGIN, y: MARGIN });
   const didFit = useRef(false);
 
   // Re-seed the collapsed layers and refit when a different mind map loads.
@@ -131,7 +131,21 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
       let cursor = top;
       for (const k of kids) cursor += layoutY(k, cursor) + V_GAP;
       const span = cursor - V_GAP - top;
-      n.y = (kids[0]!.y + kids[kids.length - 1]!.y) / 2;
+      if (span < n.h) {
+        // Parent box is taller than its children's combined span — recentre the
+        // children within the parent's height so the parent box doesn't overflow
+        // upward and overlap the preceding sibling subtree.
+        const shift = (n.h - span) / 2;
+        const shiftTree = (node: LNode) => {
+          node.y += shift;
+          const active = collapsed.has(node.id) ? [] : node.children;
+          for (const child of active) shiftTree(child);
+        };
+        for (const k of kids) shiftTree(k);
+        n.y = top + n.h / 2;
+      } else {
+        n.y = (kids[0]!.y + kids[kids.length - 1]!.y) / 2;
+      }
       return Math.max(span, n.h);
     };
     const layoutX = (n: LNode, x: number) => {
@@ -178,8 +192,7 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
     const cw = el.clientWidth;
     const ch = el.clientHeight;
     const z = clamp(Math.min((cw - 32) / contentW, (ch - 32) / contentH, 1.25), 0.2, 1.5);
-    setZoom(z);
-    setPan({ x: (cw - contentW * z) / 2, y: (ch - contentH * z) / 2 });
+    setVt({ z, x: (cw - contentW * z) / 2, y: (ch - contentH * z) / 2 });
   };
 
   // Fit to screen once after first layout.
@@ -195,14 +208,16 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
   const onPointerDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest('[data-no-pan]')) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+    drag.current = { x: e.clientX, y: e.clientY, px: vt.x, py: vt.y };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (!drag.current) return;
-    setPan({
-      x: drag.current.px + (e.clientX - drag.current.x),
-      y: drag.current.py + (e.clientY - drag.current.y),
-    });
+    const d = drag.current;
+    setVt((v) => ({
+      ...v,
+      x: d.px + (e.clientX - d.x),
+      y: d.py + (e.clientY - d.y),
+    }));
   };
   const endDrag = (e: React.PointerEvent) => {
     drag.current = null;
@@ -214,19 +229,25 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
   };
 
   // ── Zoom ───────────────────────────────────────────────────────────────────
+  // Zoom around (cx, cy) so the point under the cursor stays fixed.
   const zoomAt = (factor: number, cx: number, cy: number) => {
-    setZoom((z) => {
-      const nz = clamp(z * factor, 0.2, 2.5);
-      const k = nz / z;
-      setPan((p) => ({ x: cx - (cx - p.x) * k, y: cy - (cy - p.y) * k }));
-      return nz;
+    setVt((v) => {
+      const nz = clamp(v.z * factor, 0.2, 2.5);
+      const k = nz / v.z;
+      return { z: nz, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k };
     });
   };
+  // Ctrl/Cmd (or trackpad pinch, which sends ctrlKey) zooms; plain wheel pans —
+  // matching Figma/Miro so two-finger scrolling doesn't zoom uncontrollably.
   const onWheel = (e: React.WheelEvent) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    const cx = e.clientX - (rect?.left ?? 0);
-    const cy = e.clientY - (rect?.top ?? 0);
-    zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, cx, cy);
+    if (e.ctrlKey || e.metaKey) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      const cx = e.clientX - (rect?.left ?? 0);
+      const cy = e.clientY - (rect?.top ?? 0);
+      zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, cx, cy);
+    } else {
+      setVt((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+    }
   };
   const zoomCenter = (factor: number) => {
     const el = containerRef.current;
@@ -256,7 +277,6 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
-      onPointerLeave={endDrag}
       onWheel={onWheel}
     >
       <div
@@ -264,7 +284,7 @@ export default function MindmapView({ tree }: { tree: MindNode }) {
         style={{
           width: contentW,
           height: contentH,
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          transform: `translate(${vt.x}px, ${vt.y}px) scale(${vt.z})`,
         }}
       >
         <svg
