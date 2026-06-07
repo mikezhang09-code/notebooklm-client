@@ -216,6 +216,53 @@ export function resolveFrom(item: Item, nbMap: Map<string, string>): string | nu
   return item.from;
 }
 
+// ── Corpus RAG chat ──────────────────────────────────────────────────────────
+
+/** Scope filters for a corpus chat: omit all for a whole-corpus chat. */
+export interface CorpusChatScope {
+  collectionId?: string;
+  kind?: string;
+  category?: 'notebooklm' | 'collection' | 'freeform';
+  artifactId?: string;
+}
+
+export interface CorpusChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface CorpusChatSource {
+  index: number; // 1-based, matches the [n] markers in the answer
+  artifact: {
+    id: string;
+    kind: string;
+    title: string;
+    mimeType: string | null;
+    [key: string]: unknown;
+  };
+  snippets: { chunkId: string; ordinal: number; distance: number; text: string }[];
+  bestDistance: number;
+}
+
+export interface CorpusChatResult {
+  answer: string;
+  citations: { start: number; end: number; text: string; sourceIndices: number[] }[];
+  sources: CorpusChatSource[];
+  retrievalMs: number;
+  chatMs: number;
+  noSources: boolean;
+  finishReason?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/** Run one retrieval-augmented chat turn over the corpus (optionally scoped). */
+export function corpusChat(
+  input: { question: string; history?: CorpusChatTurn[] } & CorpusChatScope,
+): Promise<CorpusChatResult> {
+  return apiJson('/api/corpus/chat', input);
+}
+
 /** Returns a long-lived share URL (server shape: { shareUrl } or { url }). */
 export async function shareItem(id: string): Promise<string> {
   const r = await apiJson<{ shareUrl?: string; url?: string; downloadUrl?: string }>(

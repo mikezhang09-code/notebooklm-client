@@ -1900,6 +1900,65 @@ body[data-theme='dark'] .kind-research {
   border: 1px solid var(--line);
   border-radius: 999px;
 }
+.cite-chip[data-src] {
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.cite-chip[data-src]:hover {
+  color: #fff;
+  background: var(--tc, var(--accent));
+  border-color: var(--tc, var(--accent));
+}
+
+/* Corpus-chat sources: clickable pills under an assistant answer. */
+.chat-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.chat-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 9px 4px 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.chat-source:hover {
+  color: var(--ink);
+  border-color: var(--tc, var(--accent));
+}
+.chat-source svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.chat-source-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--tc, var(--accent));
+  border-radius: 50%;
+}
+.chat-source-t {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .typing {
   display: inline-flex;
   gap: 4px;

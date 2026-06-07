@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
+import CorpusChat from '../../components/CorpusChat';
 import ItemModal from '../../components/ItemModal';
 import MarkdownEditor from '../../components/MarkdownEditor';
 import UploadDrawer from '../../components/UploadDrawer';
@@ -43,6 +44,7 @@ export default function CollectionDetailPage() {
   const [picking, setPicking] = useState(false);
   const [genType, setGenType] = useState<TypeKey | null>(null);
   const [editing, setEditing] = useState(false);
+  const [tab, setTab] = useState<'files' | 'chat'>('files');
 
   function fileToItem(f: CollectionFile): Item {
     return {
@@ -133,14 +135,34 @@ export default function CollectionDetailPage() {
 
       {error && <div className="empty" style={{ color: 'var(--accent)' }}>{error}</div>}
 
-      {col && col.files.length === 0 && !loading && (
+      {col && (
+        <div className="seg" style={{ width: 'fit-content', marginBottom: 18 }}>
+          <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>
+            <Icon id="i-folder" /> Files
+          </button>
+          <button className={tab === 'chat' ? 'on' : ''} onClick={() => setTab('chat')}>
+            <Icon id="i-chat" /> Chat
+          </button>
+        </div>
+      )}
+
+      {col && tab === 'chat' && (
+        <CorpusChat
+          scope={{ collectionId: id }}
+          title={`Chat with “${col.name}”`}
+          subtitle={`Answers are grounded in this collection's ${col.itemCount} items, with citations.`}
+          placeholder="Ask about this collection…"
+        />
+      )}
+
+      {tab === 'files' && col && col.files.length === 0 && !loading && (
         <div className="empty">
           <Icon id="i-folder" />
           <p>No files yet. Upload something to get started.</p>
         </div>
       )}
 
-      {col && col.files.length > 0 && (
+      {tab === 'files' && col && col.files.length > 0 && (
         <div className="files">
           {col.files.map((f) => {
             const face = describe(f.kind, f.mimeType, f.title);
@@ -183,11 +205,13 @@ export default function CollectionDetailPage() {
         </div>
       )}
 
-      <div style={{ marginTop: 26 }}>
-        <button className="act del" onClick={handleDelete}>
-          <Icon id="i-trash" /> Delete collection
-        </button>
-      </div>
+      {tab === 'files' && (
+        <div style={{ marginTop: 26 }}>
+          <button className="act del" onClick={handleDelete}>
+            <Icon id="i-trash" /> Delete collection
+          </button>
+        </div>
+      )}
 
       {uploadOpen && (
         <UploadDrawer
