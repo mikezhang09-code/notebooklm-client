@@ -1,0 +1,27 @@
+# OML4Py 2.1 dependency stack for the bge-m3 → Oracle 26ai conversion.
+# Pinned to the versions Oracle documents for OML4Py 2.1 (verified installable
+# on Python 3.12). Install into a venv on an x86_64 Linux box:
+#
+#   python3.12 -m venv ~/oml-venv
+#   ~/oml-venv/bin/pip install --upgrade pip
+#   # CPU-only torch (smaller, no GPU needed for a one-time export):
+#   ~/oml-venv/bin/pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+#   ~/oml-venv/bin/pip install -r requirements.txt
+#   # then the OML4Py client wheel (NOT on PyPI — see README.md):
+#   ~/oml-venv/bin/pip install oml-2.1.1-cp312-cp312-linux_x86_64.whl
+#
+# NOTE: torch is intentionally NOT pinned here — install it separately from the
+# CPU index above so pip doesn't pull the multi-GB CUDA build.
+
+pandas==2.2.2
+setuptools==70.0.0
+scipy==1.14.0
+matplotlib==3.8.4
+oracledb==2.4.1
+scikit-learn==1.5.1
+numpy==2.0.1
+onnx==1.17.0
+onnxruntime==1.20.0
+onnxruntime-extensions==0.12.0
+transformers==4.49.0
+sentencepiece==0.2.0
