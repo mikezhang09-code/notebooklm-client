@@ -12,11 +12,83 @@
  * inline citations next to the answer and show the underlying snippets.
  */
 
+import oracledb from 'oracledb';
 import type { CorpusConfig, ChatProvider } from './config.js';
 import { chatCohere, type CohereChatTurn } from './oci/genai.js';
 import { chatGemini } from './oci/gemini.js';
 import { chatMimo } from './oci/mimo.js';
+import { withConnection } from './oci/db.js';
+import { getObjectBuffer } from './oci/storage.js';
+import { extract } from './extract/index.js';
 import { searchCorpus, type SearchHit, type SearchSnippet } from './search.js';
+
+/** Max characters of a whole document fed into the prompt as a fallback. */
+const WHOLE_DOC_CHAR_CAP = 48000;
+
+/**
+ * Load a single artifact's full text straight from Object Storage (fetch blob
+ * → extract). Used as a fallback for a single-document chat whose target has no
+ * indexed chunks, so the model can still answer from the whole document.
+ * Returns null if the artifact is missing or its blob can't be read.
+ */
+async function loadWholeDocument(
+  cfg: CorpusConfig,
+  artifactId: string,
+): Promise<{ artifact: SearchHit['artifact']; text: string } | null> {
+  const row = await withConnection(cfg, async (conn) => {
+    const r = await conn.execute<Record<string, unknown>>(
+      `SELECT id, kind, origin, title, notebook_id, artifact_id, bucket,
+              object_name, mime_type, size_bytes, tags, metadata, created_at
+         FROM artifacts WHERE id = :id`,
+      { id: artifactId },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return r.rows?.[0];
+  });
+  if (!row) return null;
+
+  const objectName = String(row['OBJECT_NAME']);
+  let text = '';
+  try {
+    const buffer = await getObjectBuffer(cfg, objectName);
+    text = await extract(buffer, (row['MIME_TYPE'] as string | null) ?? undefined, objectName);
+  } catch (err) {
+    console.warn(
+      `[corpus.chat] whole-document load failed for ${artifactId}: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return null;
+  }
+
+  const parseJson = <T,>(v: unknown, fb: T): T => {
+    if (v == null) return fb;
+    if (typeof v === 'object') return v as T;
+    try {
+      return JSON.parse(String(v)) as T;
+    } catch {
+      return fb;
+    }
+  };
+  const createdAt = row['CREATED_AT'];
+  return {
+    text,
+    artifact: {
+      id: String(row['ID']),
+      kind: String(row['KIND']),
+      origin: String(row['ORIGIN']),
+      title: String(row['TITLE']),
+      notebookId: (row['NOTEBOOK_ID'] as string | null) ?? null,
+      artifactId: (row['ARTIFACT_ID'] as string | null) ?? null,
+      bucket: String(row['BUCKET']),
+      objectName,
+      mimeType: (row['MIME_TYPE'] as string | null) ?? null,
+      sizeBytes: Number(row['SIZE_BYTES'] ?? 0),
+      tags: parseJson<string[]>(row['TAGS'], []),
+      metadata: parseJson<Record<string, unknown>>(row['METADATA'], {}),
+      createdAt: createdAt instanceof Date ? createdAt.toISOString() : String(createdAt ?? ''),
+    },
+  };
+}
 
 export interface ChatTurn {
   role: 'user' | 'assistant';
@@ -162,6 +234,36 @@ export async function chatCorpus(
         id: `doc_${src.index}_${snip.ordinal}`,
         title: `[${src.index}] ${src.artifact.title} · chunk #${snip.ordinal}`,
         snippet: snip.text,
+      });
+    }
+  }
+
+  // Whole-document fallback: a single-document chat whose target has no indexed
+  // chunks (un-embedded upload, or one that fell outside retrieval) is still
+  // answered by loading the full document text directly into the prompt.
+  if (documents.length === 0 && singleDoc && opts.artifactId) {
+    const whole = await loadWholeDocument(cfg, opts.artifactId);
+    if (whole && whole.text.trim().length > 0) {
+      const capped = whole.text.slice(0, WHOLE_DOC_CHAR_CAP);
+      sources.push({
+        index: 1,
+        artifact: whole.artifact,
+        snippets: [
+          {
+            chunkId: 'whole-document',
+            ordinal: 0,
+            distance: 0,
+            text: capped.slice(0, 1200),
+            charStart: 0,
+            charEnd: capped.length,
+          },
+        ],
+        bestDistance: 0,
+      });
+      documents.push({
+        id: 'doc_1_0',
+        title: `[1] ${whole.artifact.title} · full document`,
+        snippet: capped,
       });
     }
   }
