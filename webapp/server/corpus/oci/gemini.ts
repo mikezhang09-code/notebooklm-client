@@ -128,14 +128,17 @@ export async function chatGemini(
   });
 
   const generationConfig: Record<string, unknown> = {
-    maxOutputTokens: opts.maxTokens ?? 2048,
+    // Generous headroom so any "thinking" the model does before answering
+    // doesn't crowd out a complete response. OCR overrides this with a higher
+    // cap; RAG answers comfortably fit in 4096.
+    maxOutputTokens: opts.maxTokens ?? 4096,
     temperature: opts.temperature ?? 0.2,
   };
-  // Gemini 2.5 models "think" before answering, and those thinking tokens are
-  // drawn from maxOutputTokens — heavy thinking can exhaust the budget and
-  // truncate the visible answer mid-sentence. Cap the thinking budget so the
-  // bulk of the budget goes to the response (flash/flash-lite accept 0 =
-  // disabled; pro requires a small positive minimum).
+  // Gemini 2.5 specifically draws "thinking" tokens from maxOutputTokens, which
+  // can exhaust the budget and truncate the answer mid-sentence. `thinkingBudget`
+  // is a 2.5-era control, so apply it only to 2.5 models (flash/flash-lite accept
+  // 0 = disabled; pro needs a small positive minimum). Other families (1.5, 3.x)
+  // manage thinking differently and rely on the maxOutputTokens headroom above.
   if (/2\.5/.test(model)) {
     generationConfig['thinkingConfig'] = {
       thinkingBudget: /pro/i.test(model) ? 256 : 0,

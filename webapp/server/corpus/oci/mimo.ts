@@ -98,7 +98,7 @@ export async function chatMimo(
   const body = {
     model,
     messages,
-    max_tokens: opts.maxTokens ?? 2048,
+    max_tokens: opts.maxTokens ?? 4096,
     temperature: opts.temperature ?? 0.2,
   };
 
