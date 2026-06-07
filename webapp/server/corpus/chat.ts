@@ -118,8 +118,12 @@ export async function chatCorpus(
   if (question.length === 0) throw new Error('question is required');
 
   const maxSources = clampInt(opts.maxSources, 1, 10, 6);
-  const snippetsPerSource = clampInt(opts.snippetsPerSource, 1, 4, 2);
-  const maxDistance = opts.maxDistance ?? 0.75;
+  // A single-document chat (artifactId) explicitly targets one doc, so feed the
+  // model more of its chunks and don't filter them out by distance — the user
+  // already chose the source. Broader chats keep the tighter relevance gate.
+  const singleDoc = Boolean(opts.artifactId);
+  const snippetsPerSource = clampInt(opts.snippetsPerSource, 1, 8, singleDoc ? 6 : 2);
+  const maxDistance = opts.maxDistance ?? (singleDoc ? 2 : 0.75);
 
   // ── 1. Retrieve ─────────────────────────────────────────────────────
   const t0 = Date.now();
@@ -173,11 +177,21 @@ export async function chatCorpus(
   // If retrieval found nothing, shortcut with a candid "I don't know" reply
   // instead of asking the model to hallucinate against an empty context.
   if (documents.length === 0) {
-    return {
-      answer:
-        'I could not find anything in your research corpus that matches ' +
+    // A single-document chat that returns nothing almost always means the
+    // document has no indexed text (a scanned/image PDF, media still awaiting
+    // transcription, or a failed extraction) — say that rather than implying
+    // the document is missing.
+    const answer = singleDoc
+      ? "I couldn't find any indexed text for this document, so I can't answer " +
+        'questions about it yet. This usually means it has no extractable text ' +
+        '(e.g. a scanned or image-only PDF), media that is still being ' +
+        'transcribed, or that ingestion has not finished. Try re-uploading it ' +
+        'or check its status.'
+      : 'I could not find anything in your research corpus that matches ' +
         'this question. Try rephrasing, relaxing the kind filter, or ' +
-        'ingesting more source material.',
+        'ingesting more source material.';
+    return {
+      answer,
       citations: [],
       sources,
       retrievalMs,

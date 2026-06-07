@@ -127,15 +127,27 @@ export async function chatGemini(
     parts: [{ text: opts.question }],
   });
 
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens: opts.maxTokens ?? 2048,
+    temperature: opts.temperature ?? 0.2,
+  };
+  // Gemini 2.5 models "think" before answering, and those thinking tokens are
+  // drawn from maxOutputTokens — heavy thinking can exhaust the budget and
+  // truncate the visible answer mid-sentence. Cap the thinking budget so the
+  // bulk of the budget goes to the response (flash/flash-lite accept 0 =
+  // disabled; pro requires a small positive minimum).
+  if (/2\.5/.test(model)) {
+    generationConfig['thinkingConfig'] = {
+      thinkingBudget: /pro/i.test(model) ? 256 : 0,
+    };
+  }
+
   const body = {
     system_instruction: {
       parts: [{ text: systemText }],
     },
     contents,
-    generationConfig: {
-      maxOutputTokens: opts.maxTokens ?? 900,
-      temperature: opts.temperature ?? 0.2,
-    },
+    generationConfig,
   };
 
   const response = await fetch(url, {
