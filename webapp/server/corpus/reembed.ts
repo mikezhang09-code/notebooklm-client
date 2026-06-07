@@ -17,6 +17,7 @@ import { getCorpusConfig, type CorpusConfig } from './config.js';
 import { withConnection } from './oci/db.js';
 import { getObjectBuffer } from './oci/storage.js';
 import { embedTexts } from './oci/genai.js';
+import { geminiExtractText, isOcrableMime } from './oci/gemini-ocr.js';
 import { extract } from './extract/index.js';
 import { chunkText } from './chunk.js';
 import { newId } from './ulid.js';
@@ -28,12 +29,38 @@ interface Row {
   OBJECT_NAME: string;
 }
 
-type Status = 'indexed' | 'would-index' | 'no-text' | 'fetch-failed' | 'embed-failed';
+type Status =
+  | 'indexed'
+  | 'would-index'
+  | 'would-ocr'
+  | 'no-text'
+  | 'fetch-failed'
+  | 'ocr-failed'
+  | 'embed-failed';
 interface Outcome {
   status: Status;
   chunks?: number;
   chars?: number;
   error?: string;
+  viaOcr?: boolean;
+}
+
+/** Real mime for OCR: fall back to the filename when the DB has octet-stream. */
+function effectiveMime(mime: string | null, objectName: string): string | undefined {
+  const m = (mime ?? '').toLowerCase();
+  if (m && m !== 'application/octet-stream') return m;
+  const ext = (objectName.split('.').pop() ?? '').toLowerCase();
+  const byExt: Record<string, string> = {
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    bmp: 'image/bmp',
+    tiff: 'image/tiff',
+  };
+  return byExt[ext] ?? (m || undefined);
 }
 
 /** 0-chunk artifacts (or the explicit ids), newest first. */
@@ -64,12 +91,28 @@ async function listTargets(cfg: CorpusConfig, ids: string[]): Promise<Row[]> {
 }
 
 async function reembedOne(cfg: CorpusConfig, row: Row, apply: boolean): Promise<Outcome> {
-  let text = '';
+  let buffer: Buffer;
   try {
-    const buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
-    text = await extract(buffer, row.MIME_TYPE ?? undefined, row.OBJECT_NAME);
+    buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
   } catch (err) {
     return { status: 'fetch-failed', error: err instanceof Error ? err.message : String(err) };
+  }
+
+  // First try the plain text extractors (cheap). If they find nothing and the
+  // file is a PDF/image, fall back to Gemini OCR.
+  let text = await extract(buffer, row.MIME_TYPE ?? undefined, row.OBJECT_NAME);
+  let viaOcr = false;
+  if (text.trim().length === 0) {
+    const mime = effectiveMime(row.MIME_TYPE, row.OBJECT_NAME);
+    if (isOcrableMime(mime)) {
+      if (!apply) return { status: 'would-ocr' };
+      try {
+        text = await geminiExtractText(cfg, buffer, mime!, row.TITLE);
+        viaOcr = true;
+      } catch (err) {
+        return { status: 'ocr-failed', error: err instanceof Error ? err.message : String(err) };
+      }
+    }
   }
 
   const clean = text.trim();
@@ -122,7 +165,7 @@ async function reembedOne(cfg: CorpusConfig, row: Row, apply: boolean): Promise<
     await conn.commit();
   });
 
-  return { status: 'indexed', chunks: chunks.length, chars: clean.length };
+  return { status: 'indexed', chunks: chunks.length, chars: clean.length, viaOcr };
 }
 
 async function main() {
@@ -146,25 +189,34 @@ async function main() {
   );
 
   const tally: Record<Status, number> = {
-    indexed: 0, 'would-index': 0, 'no-text': 0, 'fetch-failed': 0, 'embed-failed': 0,
+    indexed: 0, 'would-index': 0, 'would-ocr': 0, 'no-text': 0,
+    'fetch-failed': 0, 'ocr-failed': 0, 'embed-failed': 0,
   };
-  for (const row of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const row = targets[i]!;
     const o = await reembedOne(cfg, row, apply);
     tally[o.status]++;
     const detail =
       o.status === 'indexed' || o.status === 'would-index'
-        ? `${o.chunks} chunks, ${o.chars} chars`
-        : o.status === 'no-text'
-          ? 'no extractable text (scanned/image/media)'
-          : o.error ?? '';
+        ? `${o.chunks} chunks, ${o.chars} chars${o.viaOcr ? ' (via OCR)' : ''}`
+        : o.status === 'would-ocr'
+          ? 'will OCR with Gemini, then index'
+          : o.status === 'no-text'
+            ? 'no extractable text (audio/video, or OCR found none)'
+            : o.error ?? '';
     console.log(`  [${o.status.padEnd(12)}] ${row.TITLE} — ${detail}`);
+    // Gentle throttle between live OCR/embed calls to respect free-tier limits.
+    if (apply && i < targets.length - 1) await new Promise((r) => setTimeout(r, 3000));
   }
 
   console.log(
     `\nSummary: ${tally.indexed} indexed, ${tally['would-index']} would-index, ` +
-      `${tally['no-text']} no-text, ${tally['fetch-failed']} fetch-failed, ${tally['embed-failed']} embed-failed`,
+      `${tally['would-ocr']} would-ocr, ${tally['no-text']} no-text, ` +
+      `${tally['fetch-failed']} fetch-failed, ${tally['ocr-failed']} ocr-failed, ${tally['embed-failed']} embed-failed`,
   );
-  if (!apply && tally['would-index'] > 0) console.log('Re-run with --apply to index them.');
+  if (!apply && (tally['would-index'] > 0 || tally['would-ocr'] > 0)) {
+    console.log('Re-run with --apply to index them.');
+  }
 }
 
 main().then(
