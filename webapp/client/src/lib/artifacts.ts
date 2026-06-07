@@ -222,6 +222,7 @@ export function resolveFrom(item: Item, nbMap: Map<string, string>): string | nu
 export interface CorpusChatScope {
   collectionId?: string;
   kind?: string;
+  kinds?: string[];
   category?: 'notebooklm' | 'collection' | 'freeform';
   artifactId?: string;
 }

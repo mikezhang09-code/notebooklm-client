@@ -32,6 +32,9 @@ function useCrumbs(): Crumb[] {
     if (seg[1]) crumbs.push({ label: 'Collection' });
     return crumbs;
   }
+  if (head === 'ask') {
+    return [{ label: 'Ask' }];
+  }
   if (head === 'free-forms') {
     const crumbs: Crumb[] = [{ label: 'Free Forms', to: seg[1] ? '/free-forms' : undefined }];
     if (seg[1]) {
@@ -105,6 +108,17 @@ export default function AppShell() {
                 Collections
                 <span className="sub">Your research</span>
               </span>
+            </NavLink>
+          </div>
+
+          {/* ASK */}
+          <div className="nav-sec">
+            <NavLink
+              to="/ask"
+              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+            >
+              <Icon id="i-chat" />
+              <span className="n-label">Ask</span>
             </NavLink>
           </div>
 

@@ -11,6 +11,7 @@ import CollectionsPage from './pages/nh/CollectionsPage';
 import CollectionDetailPage from './pages/nh/CollectionDetailPage';
 import FreeFormsOverviewPage from './pages/nh/FreeFormsOverviewPage';
 import FreeFormTypePage from './pages/nh/FreeFormTypePage';
+import AskPage from './pages/nh/AskPage';
 import SettingsPage from './pages/nh/SettingsPage';
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/collections/:id" element={<CollectionDetailPage />} />
             <Route path="/free-forms" element={<FreeFormsOverviewPage />} />
             <Route path="/free-forms/:type" element={<FreeFormTypePage />} />
+            <Route path="/ask" element={<AskPage />} />
             <Route path="/settings/session" element={<SettingsPage tab="session" />} />
             <Route path="/settings/diagnose" element={<SettingsPage tab="diagnose" />} />
             <Route path="*" element={<Navigate to="/notebooklm" replace />} />

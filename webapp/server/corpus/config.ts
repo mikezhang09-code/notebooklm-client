@@ -85,14 +85,18 @@ export interface CorpusConfig {
 
   // ── Chat provider ───────────────────────────────────────────────────────
   /**
-   * Where to run RAG chat.
-   *   'oci'      — OCI GenAI Cohere chat (uses ociGenAiChatModel)
-   *   'gemini'   — Google Gemini API (free tier: 15 RPM)
-   *   'mimo'     — Xiaomi Mimo API (OpenAI compatible)
-   *   'disabled' — chat feature turned off, search/ingest still work
-   * Default: 'oci' when ociGenAiChatModel is set, otherwise 'disabled'.
+   * Primary chat provider — the first entry of `chatProviderChain` (or
+   * 'disabled' when the chain is empty). Kept as a convenience field; callers
+   * that want automatic failover should use `chatProviderChain`.
    */
   chatProvider: ChatProvider;
+  /**
+   * Ordered list of chat providers to try, with automatic failover: the RAG
+   * chat attempts each in turn and uses the first that succeeds. Gemini is
+   * always first; fallbacks come from CHAT_FALLBACK_PROVIDERS (default 'mimo').
+   * Only providers with valid credentials are included. Empty = chat disabled.
+   */
+  chatProviderChain: ChatProvider[];
   /** Google Gemini API key. Required when chatProvider='gemini'. */
   geminiApiKey?: string;
   /**
@@ -255,35 +259,48 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
   (partial as CorpusConfig).voyageEmbedDim = Number.isFinite(voyDim) && voyDim > 0 ? voyDim : 1024;
 
 
-  // ── Chat provider ─────────────────────────────────────────────────────
-  const chatProvRaw = envOrNull('CHAT_PROVIDER');
-  let chatProv: ChatProvider;
-  if (chatProvRaw === 'gemini') {
-    chatProv = 'gemini';
-  } else if (chatProvRaw === 'oci') {
-    chatProv = 'oci';
-  } else if (chatProvRaw === 'mimo') {
-    chatProv = 'mimo';
-  } else if (chatProvRaw === 'disabled') {
-    chatProv = 'disabled';
-  } else {
-    // Auto-detect: if GEMINI_API_KEY is set, use gemini; else if OCI chat model is set, use oci; else disabled.
-    const gemKey = envOrNull('GEMINI_API_KEY');
-    if (gemKey) chatProv = 'gemini';
-    else if (chatModel) chatProv = 'oci';
-    else chatProv = 'disabled';
-  }
-  (partial as CorpusConfig).chatProvider = chatProv;
+  // ── Chat provider chain ───────────────────────────────────────────────
+  // Gemini is ALWAYS the first choice; other providers act as fallbacks,
+  // tried in order if the primary fails. The fallback list is configurable
+  // via CHAT_FALLBACK_PROVIDERS (comma-separated, default "mimo") so future
+  // models can be slotted in without code changes. CHAT_PROVIDER=disabled
+  // turns chat off entirely.
   const gemKey = envOrNull('GEMINI_API_KEY');
   if (gemKey) (partial as CorpusConfig).geminiApiKey = gemKey;
-  (partial as CorpusConfig).geminiModel =
-    envOrNull('GEMINI_MODEL') ?? 'gemini-2.0-flash';
+  (partial as CorpusConfig).geminiModel = envOrNull('GEMINI_MODEL') ?? 'gemini-2.0-flash';
 
-  if (chatProv === 'mimo') {
-    (partial as CorpusConfig).mimoApiKey = envOrNull('MIMO_API_KEY') ?? undefined;
-    (partial as CorpusConfig).mimoBaseUrl = envOrNull('MIMO_BASE_URL') ?? 'https://token-plan-sgp.xiaomimimo.com/v1';
-    (partial as CorpusConfig).mimoModel = envOrNull('MIMO_MODEL') ?? 'gpt-4o';
+  // Mimo credentials are always loaded so it can serve as a fallback even
+  // while Gemini is primary.
+  (partial as CorpusConfig).mimoApiKey = envOrNull('MIMO_API_KEY') ?? undefined;
+  (partial as CorpusConfig).mimoBaseUrl =
+    envOrNull('MIMO_BASE_URL') ?? 'https://token-plan-sgp.xiaomimimo.com/v1';
+  (partial as CorpusConfig).mimoModel = envOrNull('MIMO_MODEL') ?? 'gpt-4o';
+
+  // Which providers actually have credentials configured?
+  const hasCreds: Record<ChatProvider, boolean> = {
+    gemini: Boolean(gemKey),
+    mimo: Boolean((partial as CorpusConfig).mimoApiKey),
+    oci: Boolean(chatModel),
+    disabled: false,
+  };
+
+  let chatChain: ChatProvider[];
+  if (envOrNull('CHAT_PROVIDER') === 'disabled') {
+    chatChain = [];
+  } else {
+    const fallbacks = (envOrNull('CHAT_FALLBACK_PROVIDERS') ?? 'mimo')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const valid = new Set<ChatProvider>(['gemini', 'mimo', 'oci']);
+    // Gemini always leads, then configured fallbacks; dedup, then keep only
+    // providers that are valid AND have credentials.
+    chatChain = [...new Set<string>(['gemini', ...fallbacks])]
+      .filter((p): p is ChatProvider => valid.has(p as ChatProvider))
+      .filter((p) => hasCreds[p]);
   }
+  (partial as CorpusConfig).chatProviderChain = chatChain;
+  (partial as CorpusConfig).chatProvider = chatChain[0] ?? 'disabled';
 
   // Optional: OCI Speech (M7). Fully gated — disabling leaves the rest of
   // the corpus stack functional; audio/video ingests just skip transcription.
@@ -325,9 +342,8 @@ export async function getCorpusConfig(): Promise<CorpusConfig | null> {
           : cached.embeddingProvider === 'voyage'
             ? `(${cached.voyageModel}/${cached.voyageEmbedDim}d)`
             : `(${cached.ociGenAiModel})`) +
-      ` chat=${cached.chatProvider}` +
-      (cached.chatProvider === 'oci' && cached.ociGenAiChatModel ? `(${cached.ociGenAiChatModel})` : '') +
-      (cached.chatProvider === 'gemini' ? `(${cached.geminiModel})` : '') +
+      ` chat=[${cached.chatProviderChain.join(' → ') || 'disabled'}]` +
+      (cached.chatProviderChain.includes('gemini') ? `(gemini:${cached.geminiModel})` : '') +
       (cached.speechEnabled
         ? ` speech=${cached.speechRegion}(lang=${cached.speechLanguage})`
         : ' speech=disabled'),

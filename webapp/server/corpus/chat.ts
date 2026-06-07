@@ -12,7 +12,7 @@
  * inline citations next to the answer and show the underlying snippets.
  */
 
-import type { CorpusConfig } from './config.js';
+import type { CorpusConfig, ChatProvider } from './config.js';
 import { chatCohere, type CohereChatTurn } from './oci/genai.js';
 import { chatGemini } from './oci/gemini.js';
 import { chatMimo } from './oci/mimo.js';
@@ -30,6 +30,8 @@ export interface ChatOptions {
   history?: ChatTurn[];
   /** Optional kind filter passed through to retrieval. */
   kind?: string;
+  /** Optional any-of kind filter passed through to retrieval. */
+  kinds?: string[];
   /** Optional notebook filter passed through to retrieval. */
   notebookId?: string;
   /** Optional collection filter — scope chat to one collection. */
@@ -77,6 +79,8 @@ export interface ChatResult {
   chatMs: number;
   /** True if retrieval produced no hits — the model was asked to say so. */
   noSources: boolean;
+  /** Which provider actually produced the answer (after any failover). */
+  provider?: string;
   finishReason?: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -122,6 +126,7 @@ export async function chatCorpus(
   const search = await searchCorpus(cfg, {
     query: question,
     kind: opts.kind,
+    kinds: opts.kinds,
     notebookId: opts.notebookId,
     collectionId: opts.collectionId,
     category: opts.category,
@@ -181,32 +186,30 @@ export async function chatCorpus(
     };
   }
 
-  // ── 3. Chat ─────────────────────────────────────────────────────────
-  const chatStart = performance.now();
-  let outcome;
-  const provider = opts.chatProvider || cfg.chatProvider;
-  
-  if (provider === 'gemini') {
-    // If chatModel is provided, create a copy of cfg with the override
-    const runCfg = opts.chatModel ? { ...cfg, geminiModel: opts.chatModel } : cfg;
-    outcome = await chatGemini(runCfg, {
-      question: opts.question,
-      preamble: DEFAULT_PREAMBLE,
-      history,
-      documents,
-    });
-  } else if (provider === 'mimo') {
-    const runCfg = opts.chatModel ? { ...cfg, mimoModel: opts.chatModel } : cfg;
-    outcome = await chatMimo(runCfg, {
-      question: opts.question,
-      preamble: DEFAULT_PREAMBLE,
-      history,
-      documents,
-    });
-  } else {
-    // Fall back to oci
+  // ── 3. Chat (with provider failover) ─────────────────────────────────
+  // Run a single provider. Gemini is the primary; mimo/oci are fallbacks.
+  const runProvider = (provider: ChatProvider) => {
+    if (provider === 'gemini') {
+      const runCfg = opts.chatModel ? { ...cfg, geminiModel: opts.chatModel } : cfg;
+      return chatGemini(runCfg, {
+        question: opts.question,
+        preamble: DEFAULT_PREAMBLE,
+        history,
+        documents,
+      });
+    }
+    if (provider === 'mimo') {
+      const runCfg = opts.chatModel ? { ...cfg, mimoModel: opts.chatModel } : cfg;
+      return chatMimo(runCfg, {
+        question: opts.question,
+        preamble: DEFAULT_PREAMBLE,
+        history,
+        documents,
+      });
+    }
+    // oci (cohere)
     const runCfg = opts.chatModel ? { ...cfg, ociGenAiChatModel: opts.chatModel } : cfg;
-    outcome = await chatCohere(runCfg, {
+    return chatCohere(runCfg, {
       question: opts.question,
       preamble: DEFAULT_PREAMBLE,
       history,
@@ -214,6 +217,38 @@ export async function chatCorpus(
       maxTokens: 900,
       temperature: 0.2,
     });
+  };
+
+  // An explicit chatProvider override pins a single provider; otherwise walk
+  // the configured chain (gemini → fallbacks) and use the first that works.
+  const chain: ChatProvider[] = opts.chatProvider
+    ? [opts.chatProvider as ChatProvider]
+    : cfg.chatProviderChain.length > 0
+      ? cfg.chatProviderChain
+      : [cfg.chatProvider];
+
+  const chatStart = performance.now();
+  let outcome: Awaited<ReturnType<typeof runProvider>> | undefined;
+  let usedProvider: ChatProvider | undefined;
+  let lastErr: unknown;
+  for (const provider of chain) {
+    try {
+      outcome = await runProvider(provider);
+      usedProvider = provider;
+      break;
+    } catch (err) {
+      lastErr = err;
+      console.warn(
+        `[corpus.chat] provider "${provider}" failed: ` +
+          `${err instanceof Error ? err.message : String(err)}` +
+          (provider === chain[chain.length - 1] ? '' : ' — trying next'),
+      );
+    }
+  }
+  if (!outcome) {
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error('all chat providers failed');
   }
   const chatMs = performance.now() - chatStart;
 
@@ -242,6 +277,7 @@ export async function chatCorpus(
     retrievalMs,
     chatMs,
     noSources: false,
+    provider: usedProvider,
     finishReason: outcome.finishReason,
     inputTokens: outcome.inputTokens,
     outputTokens: outcome.outputTokens,

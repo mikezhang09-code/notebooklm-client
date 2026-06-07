@@ -1006,6 +1006,9 @@ corpusRouter.post(
     const result = await searchCorpus(cfg, {
       query,
       kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
+      kinds: Array.isArray(body['kinds'])
+        ? body['kinds'].filter((k): k is string => typeof k === 'string')
+        : undefined,
       notebookId:
         typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
       collectionId:
@@ -1104,6 +1107,9 @@ corpusRouter.post(
       question,
       history,
       kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
+      kinds: Array.isArray(body['kinds'])
+        ? body['kinds'].filter((k): k is string => typeof k === 'string')
+        : undefined,
       notebookId:
         typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
       collectionId:

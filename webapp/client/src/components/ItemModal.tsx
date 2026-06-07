@@ -8,6 +8,7 @@ import { describe, SOURCES } from '../lib/registry';
 import { getDownloadUrl, deleteItem, shareItem, getRawText, isEditable, type Item } from '../lib/artifacts';
 import { toast } from '../lib/toast';
 import Viewer from './Viewer';
+import CorpusChat from './CorpusChat';
 import MarkdownEditor from './MarkdownEditor';
 import EditItemDrawer from './EditItemDrawer';
 
@@ -32,6 +33,7 @@ export default function ItemModal({
   const [downloadUrl, setDownloadUrl] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [viewing, setViewing] = useState(false);
+  const [chatting, setChatting] = useState(false);
   const [editContent, setEditContent] = useState<string | null>(null);
   const [editingDetails, setEditingDetails] = useState(false);
   const editable = isEditable(item);
@@ -127,6 +129,9 @@ export default function ItemModal({
           <button className="btn btn-primary" onClick={() => setViewing(true)}>
             <Icon id="i-grid" /> View
           </button>
+          <button className="btn btn-soft" onClick={() => setChatting(true)}>
+            <Icon id="i-chat" /> Ask
+          </button>
           {editable && (
             <button className="btn btn-soft" onClick={handleEdit}>
               <Icon id="i-doc" /> Edit
@@ -171,6 +176,58 @@ export default function ItemModal({
       </div>
 
       {viewing && <Viewer id={item.id} title={item.title} tc={t.color} onClose={() => setViewing(false)} />}
+
+      {chatting && (
+        <div
+          className="modal-root show"
+          style={{ '--tc': t.color, padding: 24 } as React.CSSProperties}
+          onClick={(e) => e.target === e.currentTarget && setChatting(false)}
+        >
+          <div
+            style={{
+              width: '92vw',
+              maxWidth: 860,
+              height: '84vh',
+              background: 'var(--bg)',
+              border: '1px solid var(--line)',
+              borderRadius: 16,
+              boxShadow: 'var(--shadow-lg)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '14px 18px',
+                borderBottom: '1px solid var(--line)',
+              }}
+            >
+              <span className="t-ic" style={{ width: 34, height: 34 }}>
+                <Icon id={t.icon} />
+              </span>
+              <b style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                Ask · {item.title}
+              </b>
+              <button className="icon-btn" onClick={() => setChatting(false)}>
+                <Icon id="i-close" />
+              </button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '10px 20px 18px' }}>
+              <CorpusChat
+                scope={{ artifactId: item.id }}
+                title={`Chat with “${item.title}”`}
+                subtitle="Answers are grounded in this document, with citations."
+                placeholder="Ask about this document…"
+                accent={t.color}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {editingDetails && (
         <EditItemDrawer

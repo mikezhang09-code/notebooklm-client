@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
+import CorpusChat from '../../components/CorpusChat';
 import ItemModal from '../../components/ItemModal';
 import { CreateChooser } from '../../components/CreateFlow';
 import UploadDrawer from '../../components/UploadDrawer';
@@ -43,6 +44,7 @@ export default function FreeFormTypePage() {
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [noteEditing, setNoteEditing] = useState(false);
+  const [tab, setTab] = useState<'list' | 'chat'>('list');
 
   async function reload() {
     setLoading(true);
@@ -76,6 +78,8 @@ export default function FreeFormTypePage() {
   }, [items]);
 
   const rows = filter === 'all' ? items : items.filter((it) => it.provenance === filter);
+  // Distinct backend kinds backing this display type (e.g. data-table + data_table).
+  const kinds = useMemo(() => [...new Set(items.map((it) => it.kind))], [items]);
 
   return (
     <div className="content" style={{ '--tc': t.color } as React.CSSProperties}>
@@ -103,23 +107,45 @@ export default function FreeFormTypePage() {
         </div>
       </div>
 
-      <div className="chips" style={{ marginBottom: 16 }}>
-        {FILTERS.map((f) => (
-          <button
-            key={f.key}
-            className={`chip${filter === f.key ? ' on' : ''}`}
-            onClick={() => setFilter(f.key)}
-          >
-            {f.dot && <span className="c-dot" style={{ background: f.dot }} />}
-            {f.label}
-            <span className="c-x">{counts[f.key]}</span>
-          </button>
-        ))}
+      <div className="seg" style={{ width: 'fit-content', marginBottom: 16 }}>
+        <button className={tab === 'list' ? 'on' : ''} onClick={() => setTab('list')}>
+          <Icon id={t.icon} /> {t.plural}
+        </button>
+        <button className={tab === 'chat' ? 'on' : ''} onClick={() => setTab('chat')}>
+          <Icon id="i-chat" /> Chat
+        </button>
       </div>
 
       {error && <div className="empty" style={{ color: 'var(--accent)' }}>{error}</div>}
 
-      {!loading && rows.length === 0 ? (
+      {tab === 'chat' && (
+        <CorpusChat
+          scope={{ kinds: kinds.length > 0 ? kinds : undefined }}
+          title={`Chat with your ${t.plural.toLowerCase()}`}
+          subtitle={`Answers are grounded in your ${items.length} ${t.plural.toLowerCase()} across all sources, with citations.`}
+          placeholder={`Ask about your ${t.plural.toLowerCase()}…`}
+          accent={t.color}
+        />
+      )}
+
+      {tab === 'list' && (
+        <div className="chips" style={{ marginBottom: 16 }}>
+          {FILTERS.map((f) => (
+            <button
+              key={f.key}
+              className={`chip${filter === f.key ? ' on' : ''}`}
+              onClick={() => setFilter(f.key)}
+            >
+              {f.dot && <span className="c-dot" style={{ background: f.dot }} />}
+              {f.label}
+              <span className="c-x">{counts[f.key]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'list' &&
+        (!loading && rows.length === 0 ? (
         <div className="empty">
           <Icon id={t.icon} />
           <p>No {t.plural.toLowerCase()} yet.</p>
@@ -161,9 +187,9 @@ export default function FreeFormTypePage() {
             );
           })}
         </div>
-      )}
+        ))}
 
-      {loading && <div className="empty">Loading…</div>}
+      {tab === 'list' && loading && <div className="empty">Loading…</div>}
 
       {open && <ItemModal item={open} onClose={() => setOpen(null)} onDeleted={reload} />}
 

@@ -20,6 +20,8 @@ export interface SearchOptions {
   query: string;
   /** Optional kind filter (single value). */
   kind?: string;
+  /** Optional kind filter (any-of) — e.g. a display type backed by 2 kinds. */
+  kinds?: string[];
   /** Optional notebook filter. */
   notebookId?: string;
   /** Optional collection filter — restrict to one collection's artifacts. */
@@ -175,6 +177,13 @@ export async function searchCorpus(
   if (opts.kind) {
     filters.push('a.kind = :f_kind');
     filterBinds['f_kind'] = opts.kind;
+  }
+  if (opts.kinds && opts.kinds.length > 0) {
+    const ph = opts.kinds.map((_, i) => `:fk${i}`);
+    filters.push(`a.kind IN (${ph.join(', ')})`);
+    opts.kinds.forEach((k, i) => {
+      filterBinds[`fk${i}`] = k;
+    });
   }
   if (opts.notebookId) {
     filters.push('a.notebook_id = :f_nb');
