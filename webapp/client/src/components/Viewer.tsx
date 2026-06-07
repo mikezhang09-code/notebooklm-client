@@ -7,6 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
+import MindmapView from './MindmapView';
 import { getView, type ViewPayload } from '../lib/artifacts';
 
 interface Heading {
@@ -39,6 +40,7 @@ export default function Viewer({
   const [error, setError] = useState<string | null>(null);
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [outlineOpen, setOutlineOpen] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -89,18 +91,18 @@ export default function Viewer({
   return (
     <div
       className="modal-root show"
-      style={{ '--tc': tc, padding: 24 } as React.CSSProperties}
+      style={{ '--tc': tc, padding: expanded ? 0 : 24 } as React.CSSProperties}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         style={{
-          width: '92vw',
-          maxWidth: 1180,
-          height: '88vh',
+          width: expanded ? '100vw' : '92vw',
+          maxWidth: expanded ? 'none' : 1180,
+          height: expanded ? '100vh' : '88vh',
           background: 'var(--bg)',
-          border: '1px solid var(--line)',
-          borderRadius: 16,
-          boxShadow: 'var(--shadow-lg)',
+          border: expanded ? 'none' : '1px solid var(--line)',
+          borderRadius: expanded ? 0 : 16,
+          boxShadow: expanded ? 'none' : 'var(--shadow-lg)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -143,15 +145,51 @@ export default function Viewer({
               <Icon id="i-download" /> Download
             </a>
           )}
+          <button
+            className="icon-btn"
+            title={expanded ? 'Restore' : 'Expand to full screen'}
+            onClick={() => setExpanded((e) => !e)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+              {expanded ? (
+                <path
+                  d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ) : (
+                <path
+                  d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+            </svg>
+          </button>
           <button className="icon-btn" onClick={onClose}>
             <Icon id="i-close" />
           </button>
         </div>
 
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-          <div style={{ flex: 1, minWidth: 0, overflow: 'auto', background: 'var(--card-2)' }}>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: view?.type === 'mindmap' ? 'hidden' : 'auto',
+              background: 'var(--card-2)',
+            }}
+          >
             {error && <div className="empty" style={{ color: 'var(--accent)' }}>{error}</div>}
             {!error && !view && <div className="empty">Loading preview…</div>}
+
+            {view?.type === 'mindmap' && <MindmapView tree={view.tree} />}
 
             {view?.type === 'pdf' && (
               <iframe title={title} src={view.downloadUrl} style={{ width: '100%', height: '100%', border: 0 }} />

@@ -112,12 +112,19 @@ export async function getDownloadUrl(id: string): Promise<string | undefined> {
   return r.downloadUrl;
 }
 
+/** A node in a NotebookLM mind-map tree. */
+export interface MindNode {
+  name: string;
+  children: MindNode[];
+}
+
 export type ViewPayload =
   | { type: 'pdf'; downloadUrl: string; mimeType?: string }
   | { type: 'office'; officeViewerUrl: string; downloadUrl: string; mimeType?: string }
   | { type: 'image'; downloadUrl: string; mimeType?: string }
   | { type: 'html'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'text'; content: string; downloadUrl: string; mimeType?: string }
+  | { type: 'mindmap'; tree: MindNode; downloadUrl: string; mimeType?: string }
   | { type: 'unsupported'; downloadUrl: string; mimeType?: string };
 
 /** Fetch inline-render info for an artifact (pdf/office/image/html/text/unsupported). */
