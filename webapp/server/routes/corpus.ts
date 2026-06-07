@@ -1008,6 +1008,11 @@ corpusRouter.post(
       kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
       notebookId:
         typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
+      collectionId:
+        typeof body['collectionId'] === 'string' ? body['collectionId'] : undefined,
+      category: typeof body['category'] === 'string' ? body['category'] : undefined,
+      artifactId:
+        typeof body['artifactId'] === 'string' ? body['artifactId'] : undefined,
       candidateLimit:
         typeof body['candidateLimit'] === 'number' ? body['candidateLimit'] : undefined,
       artifactLimit:
@@ -1033,6 +1038,9 @@ corpusRouter.post(
  *   history            (optional) Array<{ role: 'user'|'assistant', content }>
  *   kind               (optional) artifact kind filter passed to retrieval
  *   notebookId         (optional) restrict retrieval to a single notebook
+ *   collectionId       (optional) restrict retrieval to a single collection
+ *   category           (optional) notebooklm | collection | freeform
+ *   artifactId         (optional) restrict retrieval to a single document
  *   maxSources         (optional) artifacts to retrieve (default 6, max 10)
  *   snippetsPerSource  (optional) chunks per artifact in the prompt
  *                                 (default 2, max 4)
@@ -1098,6 +1106,11 @@ corpusRouter.post(
       kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
       notebookId:
         typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
+      collectionId:
+        typeof body['collectionId'] === 'string' ? body['collectionId'] : undefined,
+      category: typeof body['category'] === 'string' ? body['category'] : undefined,
+      artifactId:
+        typeof body['artifactId'] === 'string' ? body['artifactId'] : undefined,
       maxSources:
         typeof body['maxSources'] === 'number' ? body['maxSources'] : undefined,
       snippetsPerSource:

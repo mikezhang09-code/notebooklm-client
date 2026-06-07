@@ -32,6 +32,12 @@ export interface ChatOptions {
   kind?: string;
   /** Optional notebook filter passed through to retrieval. */
   notebookId?: string;
+  /** Optional collection filter — scope chat to one collection. */
+  collectionId?: string;
+  /** Optional category filter: notebooklm | collection | freeform. */
+  category?: string;
+  /** Optional single-artifact filter — scope chat to one document. */
+  artifactId?: string;
   /** How many artifacts to retrieve (default 6, max 10). */
   maxSources?: number;
   /** How many snippets per artifact to feed into the prompt (default 2, max 4). */
@@ -117,6 +123,9 @@ export async function chatCorpus(
     query: question,
     kind: opts.kind,
     notebookId: opts.notebookId,
+    collectionId: opts.collectionId,
+    category: opts.category,
+    artifactId: opts.artifactId,
     artifactLimit: maxSources,
     snippetsPerArtifact: snippetsPerSource,
     // Scan a bit wider than what we keep to give the grouper some headroom.

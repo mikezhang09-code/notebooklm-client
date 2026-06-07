@@ -22,6 +22,12 @@ export interface SearchOptions {
   kind?: string;
   /** Optional notebook filter. */
   notebookId?: string;
+  /** Optional collection filter — restrict to one collection's artifacts. */
+  collectionId?: string;
+  /** Optional category filter: notebooklm | collection | freeform. */
+  category?: string;
+  /** Optional single-artifact filter — chat/search scoped to one document. */
+  artifactId?: string;
   /** Maximum chunks to look at before grouping. Default 40, max 200. */
   candidateLimit?: number;
   /** Maximum artifacts to return after grouping. Default 10, max 50. */
@@ -173,6 +179,18 @@ export async function searchCorpus(
   if (opts.notebookId) {
     filters.push('a.notebook_id = :f_nb');
     filterBinds['f_nb'] = opts.notebookId;
+  }
+  if (opts.collectionId) {
+    filters.push('a.collection_id = :f_coll');
+    filterBinds['f_coll'] = opts.collectionId;
+  }
+  if (opts.category) {
+    filters.push('a.category = :f_cat');
+    filterBinds['f_cat'] = opts.category;
+  }
+  if (opts.artifactId) {
+    filters.push('a.id = :f_aid');
+    filterBinds['f_aid'] = opts.artifactId;
   }
   const filterSql = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
 
