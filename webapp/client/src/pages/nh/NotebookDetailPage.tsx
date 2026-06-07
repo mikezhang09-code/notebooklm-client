@@ -243,7 +243,6 @@ function ArtifactsTab({
         <div className="item-grid" style={{ marginBottom: 24 }}>
           {artifacts.map((a) => {
             const t = TYPE[artifactTypeKey(a)];
-            const isMind = a.typeLabel === 'mind-map';
             const saved = savedMap.get(a.id);
             const isSaved = !!saved || savedPending.has(a.id);
             const saving = savingId === a.id;
@@ -253,9 +252,7 @@ function ArtifactsTab({
                 className="item"
                 style={{ '--tc': t.color } as React.CSSProperties}
                 onClick={() => {
-                  if (isMind) {
-                    window.open(`https://notebooklm.google.com/notebook/${notebookId}`, '_blank');
-                  } else if (saved) {
+                  if (saved) {
                     setOpen(saved);
                   } else if (isSaved) {
                     toast('Saved — still indexing, View available shortly');
@@ -270,11 +267,7 @@ function ArtifactsTab({
                   <span className="t-ic">
                     <Icon id={t.icon} />
                   </span>
-                  {isMind ? (
-                    <span className="prov p-notebooklm">
-                      <Icon id="i-ext" /> NotebookLM
-                    </span>
-                  ) : isSaved ? (
+                  {isSaved ? (
                     <span className="health-pill ok" style={{ padding: '4px 9px' }}>
                       <span className="hd" /> Saved
                     </span>

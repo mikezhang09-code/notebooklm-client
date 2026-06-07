@@ -6,9 +6,9 @@
 
 import { Router } from 'express';
 import multer from 'multer';
-import { readdir, rename, unlink } from 'node:fs/promises';
+import { readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, extname } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import type {
   NotebookClient,
   SourceInput,
@@ -36,7 +36,8 @@ type Kind =
   | 'flashcards'
   | 'infographic'
   | 'slides'
-  | 'data-table';
+  | 'data-table'
+  | 'mind';
 
 interface GenerateBody {
   source?: {
@@ -73,6 +74,10 @@ function buildArtifactOptions(kind: Kind, opt: Record<string, string | undefined
       return { type: 'slide_deck', instructions: opt.instructions, language: opt.language, format: opt.format as never, length: opt.length as never };
     case 'data-table':
       return { type: 'data_table', instructions: opt.instructions, language: opt.language };
+    case 'mind':
+      // Mind maps don't use the studio CREATE_ARTIFACT path — they're handled
+      // separately via client.generateMindMap. Never reached.
+      throw new Error('mind maps are generated via a separate path');
   }
 }
 
@@ -212,6 +217,50 @@ async function runWorkflow(
       );
       return { downloadPaths: [r.csvPath], meta: { notebookUrl: r.notebookUrl } };
     }
+    case 'mind': {
+      // Standalone (fresh-notebook) mind generation: create a notebook from the
+      // source, then generate + persist a note-backed mind map and write its
+      // JSON node tree to the job dir.
+      onProgress({ status: 'creating_notebook', message: 'Creating notebook…' });
+      const { notebookId } = await client.createNotebook();
+      onProgress({ status: 'adding_source', message: 'Adding source…' });
+      await addSourceForMind(client, notebookId, source);
+      onProgress({ status: 'generating', message: 'Generating mind map…' });
+      const r = await client.generateMindMap(notebookId, undefined, { language: lang, instructions });
+      const treePath = join(outputDir, `mindmap_${r.noteId || Date.now()}.json`);
+      await writeFile(treePath, prettyTree(r.tree), 'utf8');
+      onProgress({ status: 'completed', message: 'Mind map complete!' });
+      return {
+        downloadPaths: [treePath],
+        meta: { noteId: r.noteId, title: r.title, notebookUrl: `https://notebooklm.google.com/notebook/${notebookId}` },
+      };
+    }
+  }
+}
+
+/** Pretty-print a mind-map JSON tree string; fall back to the raw payload. */
+function prettyTree(tree: string): string {
+  try {
+    return JSON.stringify(JSON.parse(tree), null, 2);
+  } catch {
+    return tree;
+  }
+}
+
+/** Add a single source to a notebook for mind-map generation (url/text/file). */
+async function addSourceForMind(
+  client: NotebookClient,
+  notebookId: string,
+  source: SourceInput,
+): Promise<void> {
+  if (source.type === 'url' && source.url) {
+    await client.addUrlSource(notebookId, source.url);
+  } else if (source.type === 'text' && source.text) {
+    await client.addTextSource(notebookId, 'Pasted text', source.text);
+  } else if (source.type === 'file' && source.filePath) {
+    await client.addFileSource(notebookId, source.filePath);
+  } else {
+    throw new Error('Mind maps support url, text, or file sources');
   }
 }
 
@@ -253,7 +302,20 @@ generateRouter.post(
       const job = await createJob();
 
       let output: WorkflowOutput;
-      if (body.notebookId) {
+      if (body.notebookId && kind === 'mind') {
+        // ── Mind map into an existing notebook (note-backed; no studio job) ──
+        stream.progress({ status: 'generating', message: 'Generating mind map…' });
+        const opt = (body.options ?? {}) as Record<string, string | undefined>;
+        output = await withClient({ session }, async (client) => {
+          const r = await client.generateMindMap(body.notebookId!, body.sourceIds, {
+            language: opt.language,
+            instructions: opt.instructions,
+          });
+          const treePath = join(job.dir, `mindmap_${r.noteId || Date.now()}.json`);
+          await writeFile(treePath, prettyTree(r.tree), 'utf8');
+          return { downloadPaths: [treePath], meta: { noteId: r.noteId, title: r.title } };
+        });
+      } else if (body.notebookId) {
         // ── Generate into an existing notebook (reuse its sources) ──
         stream.progress({ status: 'pending', message: `Starting ${kind} generation…` });
         const artifact = buildArtifactOptions(kind, (body.options ?? {}) as Record<string, string | undefined>);

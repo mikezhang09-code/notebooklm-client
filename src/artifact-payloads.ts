@@ -242,6 +242,34 @@ export function buildDataTablePayload(
   ];
 }
 
+/**
+ * Build `GENERATE_MIND_MAP` (yyryJe) params for a note-backed mind map.
+ *
+ * Shape verified against captured live traffic (notebooklm-py
+ * generate_mind_map_chain cassette): the source ids are nested
+ * `[[[id]]]` (same as `sidsTriple`), followed by the
+ * `["interactive_mindmap", [["[CONTEXT]", instructions]], language]`
+ * config block and a trailing `[2, null, [1]]`. The RPC responds
+ * synchronously with the `{name, children}` JSON tree at `result[0][0]`.
+ */
+export function buildMindMapParams(
+  sourceIds: string[],
+  language: string,
+  instructions?: string | null,
+): unknown[] {
+  const sidsTriple = sourceIds.map((id) => [[id]]);
+  return [
+    sidsTriple,
+    null,
+    null,
+    null,
+    null,
+    ['interactive_mindmap', [['[CONTEXT]', instructions ?? '']], language],
+    null,
+    [2, null, [1]],
+  ];
+}
+
 /** Dispatch to the correct payload builder based on artifact type. */
 export function buildArtifactPayload(
   sidsTriple: SidsTriple,

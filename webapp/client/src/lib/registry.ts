@@ -41,8 +41,8 @@ export const TYPES: ArtifactType[] = [
   { key: 'info', label: 'Infographic', plural: 'Infographics', icon: 'i-info', color: '#c1503f', generate: true, backendKind: 'infographic', ingestKind: 'infographic' },
   { key: 'slides', label: 'Slides', plural: 'Slides', icon: 'i-slides', color: '#467b86', generate: true, backendKind: 'slides', ingestKind: 'slides' },
   { key: 'table', label: 'Data table', plural: 'Data tables', icon: 'i-table', color: '#8a7c4a', generate: true, backendKind: 'data-table', ingestKind: 'data_table' },
-  // Mindmap can't be generated headlessly (needs a real browser); no backend kind.
-  { key: 'mind', label: 'Mindmap', plural: 'Mindmaps', icon: 'i-mind', color: '#5b6bbf', generate: false, backendKind: null, ingestKind: 'upload', isNew: true },
+  // Mindmaps generate as a note-backed JSON node tree (headless, no browser).
+  { key: 'mind', label: 'Mindmap', plural: 'Mindmaps', icon: 'i-mind', color: '#5b6bbf', generate: true, backendKind: 'mind', ingestKind: 'mind', isNew: true },
   // Note: hand-written markdown — created via the editor, not generated/uploaded.
   { key: 'note', label: 'Note', plural: 'Notes', icon: 'i-doc', color: '#6d8a96', generate: false, backendKind: null, ingestKind: 'note' },
 ];
@@ -166,11 +166,9 @@ export const GEN_SPEC: Record<TypeKey, GenSpec> = {
     language: true,
   },
   table: { fields: [], instructions: true, language: true },
+  // Note-backed mind maps accept only instructions + language (no depth/layout).
   mind: {
-    fields: [
-      { key: 'depth', label: 'Depth', opts: OPTS.mindDepth },
-      { key: 'layout', label: 'Layout', opts: OPTS.mindLayout },
-    ],
+    fields: [],
     instructions: true,
     language: true,
   },

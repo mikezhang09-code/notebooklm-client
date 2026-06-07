@@ -10,6 +10,8 @@
  */
 
 import { type Page } from 'puppeteer-core';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { SessionError, UserDisplayableError } from './errors.js';
 import { jitteredIncrement } from './utils/humanize.js';
 import { NB_URLS, ARTIFACT_TYPE } from './rpc-ids.js';
@@ -561,6 +563,80 @@ export class NotebookClient {
     return api.deleteArtifact(this.rpc, artifactId);
   }
 
+  // ── Mind maps ──
+  //
+  // NotebookLM stores note-backed mind maps in the notes collection (they do
+  // NOT appear in getArtifacts), so they get their own surface here. Each map
+  // is the `{name, children}` JSON node tree — the real artifact, not a
+  // screenshot.
+
+  /** List the note-backed mind maps in a notebook (id, title, raw JSON tree). */
+  async listMindMaps(
+    notebookId: string,
+  ): Promise<Array<{ id: string; title: string; content: string }>> {
+    return api.listMindMaps(this.rpc, notebookId);
+  }
+
+  /**
+   * Generate a mind map from the given sources and persist it as a note.
+   * Returns the persisted note id, derived title, and raw JSON tree string.
+   * Defaults to all of the notebook's sources when `sourceIds` is omitted.
+   */
+  async generateMindMap(
+    notebookId: string,
+    sourceIds?: string[],
+    options?: { language?: string; instructions?: string },
+  ): Promise<{ noteId: string; title: string; tree: string }> {
+    let sids = sourceIds;
+    if (!sids || sids.length === 0) {
+      sids = (await api.getNotebookDetail(this.rpc, notebookId)).sources.map((s) => s.id);
+    }
+    const lang = options?.language ?? this.transport!.getSession().language ?? 'en';
+    return api.generateMindMap(this.rpc, notebookId, sids, lang, options?.instructions);
+  }
+
+  /**
+   * Download a mind map to `outputDir` as a `.json` node tree. Resolves a
+   * note-backed map by note id first (the common case); falls back to an
+   * interactive (studio-artifact) mind map via GET_INTERACTIVE_HTML. With no
+   * `artifactId`, the first note-backed mind map is used.
+   */
+  async downloadMindMap(
+    notebookId: string,
+    outputDir: string,
+    artifactId?: string,
+  ): Promise<string> {
+    this.ensureConnected();
+    const maps = await api.listMindMaps(this.rpc, notebookId);
+
+    let tree: string | null = null;
+    if (artifactId) {
+      const match = maps.find((m) => m.id === artifactId);
+      if (match) {
+        tree = match.content;
+      } else {
+        // Not note-backed — try the interactive (studio-artifact) tree.
+        tree = await api.getInteractiveMindMapTree(this.rpc, artifactId);
+        if (!tree) throw new Error(`Mind map not found or not ready: ${artifactId}`);
+      }
+    } else {
+      if (maps.length === 0) throw new Error('No mind map found in this notebook');
+      tree = maps[0]!.content;
+    }
+
+    // Pretty-print when the payload is valid JSON; otherwise persist as-is.
+    let body = tree;
+    try {
+      body = JSON.stringify(JSON.parse(tree), null, 2);
+    } catch {
+      /* keep raw */
+    }
+    await mkdir(outputDir, { recursive: true });
+    const outPath = join(outputDir, `mindmap_${artifactId ?? Date.now()}.json`);
+    await writeFile(outPath, body, 'utf8');
+    return outPath;
+  }
+
   async createWebSearch(notebookId: string, query: string, mode: 'fast' | 'deep' = 'fast'): Promise<{ researchId: string; artifactId?: string }> {
     return api.createWebSearch(this.rpc, notebookId, query, mode);
   }
@@ -619,6 +695,13 @@ export class NotebookClient {
     const artifacts = await this.getArtifacts(notebookId);
     const artifact = artifacts.find((a) => a.id === artifactId);
     if (!artifact) {
+      // Note-backed mind maps live in the notes collection, not in
+      // getArtifacts — resolve those here before giving up.
+      const maps = await api.listMindMaps(this.rpc, notebookId);
+      if (maps.some((m) => m.id === artifactId)) {
+        const p = await this.downloadMindMap(notebookId, outputDir, artifactId);
+        return { type: ARTIFACT_TYPE.MIND_MAP, typeLabel: 'mind-map', files: [p] };
+      }
       throw new Error(`Artifact not found: ${artifactId}`);
     }
 
@@ -688,10 +771,13 @@ export class NotebookClient {
         break;
       }
       case ARTIFACT_TYPE.MIND_MAP: {
-        throw new Error(
-          'Mind-map artifacts can only be exported via a real browser (transport: "browser"). ' +
-          'Open the notebook in NotebookLM to export.',
-        );
+        // A mind map surfaced through getArtifacts is the interactive
+        // (studio-artifact) kind; its node tree comes from
+        // GET_INTERACTIVE_HTML. (Note-backed mind maps live in the notes
+        // collection — use downloadMindMap / listMindMaps for those.)
+        const p = await this.downloadMindMap(notebookId, outputDir, artifactId);
+        files.push(p);
+        break;
       }
       default: {
         throw new Error(`Artifact type ${artifact.type} (${typeLabel}) is not directly downloadable`);

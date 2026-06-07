@@ -30,6 +30,7 @@ export type ArtifactKind =
   | 'infographic'
   | 'slides'
   | 'data_table'
+  | 'mind'
   | 'upload'
   | 'note'
   | 'qa';

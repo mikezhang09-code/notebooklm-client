@@ -394,6 +394,12 @@ export interface ArtifactInfo {
   id: string;
   title: string;
   type: number;
+  /**
+   * Variant code (data[9][1][0]) for the type-4 studio family:
+   * 1 = flashcards, 2 = quiz, 4 = interactive mind map. Undefined for
+   * other types / older rows.
+   */
+  variant?: number;
   downloadUrl?: string;
   streamUrl?: string;
   hlsUrl?: string;

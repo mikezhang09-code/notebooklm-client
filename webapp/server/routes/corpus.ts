@@ -64,6 +64,7 @@ const ALLOWED_KINDS: ArtifactKind[] = [
   'infographic',
   'slides',
   'data_table',
+  'mind',
   'upload',
   'note',
   'qa',
@@ -652,6 +653,40 @@ function parseNotebookLMDataTable(parsed: unknown): string | null {
 }
 
 /**
+ * Render a NotebookLM mind-map node tree ({ name, children: [...] }) as a
+ * nested HTML list. Returns null when the value isn't a mind-map tree, so the
+ * caller can fall back to table/text rendering.
+ */
+function mindMapToHtml(parsed: unknown): string | null {
+  const isNode = (v: unknown): v is { name?: unknown; children?: unknown; nodes?: unknown } =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  if (!isNode(parsed)) return null;
+  const childrenKey = Array.isArray(parsed.children)
+    ? 'children'
+    : Array.isArray(parsed.nodes)
+      ? 'nodes'
+      : null;
+  // Require a name plus a children/nodes array — the mind-map shape.
+  if (typeof parsed.name !== 'string' || !childrenKey) return null;
+
+  const renderNode = (node: unknown): string => {
+    if (!isNode(node)) return '';
+    const name = typeof node.name === 'string' ? _esc(node.name) : '';
+    const kids = Array.isArray(node.children)
+      ? node.children
+      : Array.isArray(node.nodes)
+        ? node.nodes
+        : [];
+    const childHtml = kids.length
+      ? `<ul>${kids.map((k) => renderNode(k)).join('')}</ul>`
+      : '';
+    return `<li><span class="mm-node">${name}</span>${childHtml}</li>`;
+  };
+
+  return `<div class="mindmap-tree"><ul class="mm-root">${renderNode(parsed)}</ul></div>`;
+}
+
+/**
  * Try to render a parsed JSON value as an HTML table using multiple strategies:
  *
  * 1. NotebookLM data_table format: deeply nested row/cell structure.
@@ -844,7 +879,10 @@ corpusRouter.get(
       try { parsed = JSON.parse(text); } catch { parsed = null; }
 
       if (parsed !== null) {
-        const tableHtml = anyJsonToHtml(parsed);
+        // Mind maps ({name, children}) render as a nested tree; other JSON
+        // falls back to the table strategies, then raw text.
+        const treeHtml = mindMapToHtml(parsed);
+        const tableHtml = treeHtml ?? anyJsonToHtml(parsed);
         if (tableHtml) {
           res.json({ type: 'html', content: tableHtml, ...base });
         } else {
@@ -1588,6 +1626,7 @@ corpusRouter.post(
       infographic: 'infographic',
       slides: 'slides',
       'data-table': 'data_table',
+      mind: 'mind',
     };
     const kind: ArtifactKind = KIND_MAP[kindRaw] ?? 'upload';
 

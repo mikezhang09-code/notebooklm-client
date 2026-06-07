@@ -3,7 +3,12 @@
  */
 
 import { parseEnvelopes } from './boq-parser.js';
+import { ARTIFACT_TYPE } from './rpc-ids.js';
 import type { NotebookInfo, SourceInfo, ArtifactInfo, StudioConfig, StudioAudioType, StudioDocType, AccountInfo, ResearchResult, ChatCitation, ChatWithCitationsResult, ConversationTurn } from './types.js';
+
+// Type-4 (quiz/flashcard studio family) variant code at data[9][1][0]:
+// 1 = flashcards, 2 = quiz, 4 = interactive mind map.
+const INTERACTIVE_MIND_MAP_VARIANT = 4;
 type QuotaInfo = AccountInfo;
 
 // ── Helpers ──
@@ -230,10 +235,23 @@ export function parseArtifacts(raw: string): ArtifactInfo[] {
 
     const id = typeof entry[0] === 'string' ? entry[0] : '';
     const title = typeof entry[1] === 'string' ? entry[1] : '';
-    const type = typeof entry[2] === 'number' ? entry[2] : 0;
+    let type = typeof entry[2] === 'number' ? entry[2] : 0;
     if (!id) continue;
 
+    // Variant code at entry[9][1][0] disambiguates the type-4 studio family.
+    // An interactive mind map is a type-4 artifact (variant 4) that would
+    // otherwise be misread as a quiz; remap it to the mind-map type so it
+    // classifies + downloads as a mind map (its node tree), not a quiz.
+    const variant = (() => {
+      const v = get(entry, 9, 1, 0);
+      return typeof v === 'number' ? v : undefined;
+    })();
+    if (type === ARTIFACT_TYPE.QUIZ && variant === INTERACTIVE_MIND_MAP_VARIANT) {
+      type = ARTIFACT_TYPE.MIND_MAP;
+    }
+
     const artifact: ArtifactInfo = { id, title, type };
+    if (variant !== undefined) artifact.variant = variant;
 
     const sourceIdsRaw = getArray(entry, 3);
     if (sourceIdsRaw) {

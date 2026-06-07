@@ -50,8 +50,10 @@ function typeLabelToCorpusKind(label: string): CorpusKind | null {
       return 'slides';
     case 'data-table':
       return 'data_table';
+    case 'mind-map':
+      return 'mind';
     default:
-      return null; // mind-map, unknown types → skip
+      return null; // unknown types → skip
   }
 }
 
@@ -143,14 +145,30 @@ notebooksRouter.get(
     const session = parseSessionHeader(req);
     const id = req.params.id;
     const result = await withClient({ session }, async (client) => {
-      const [detail, artifactsRaw] = await Promise.all([
+      const [detail, artifactsRaw, mindMaps] = await Promise.all([
         client.getNotebookDetail(id),
         client.getArtifacts(id).catch(() => [] as Awaited<ReturnType<typeof client.getArtifacts>>),
+        // Note-backed mind maps live in the notes collection, so they don't
+        // show up in getArtifacts — list + merge them so the notebook surfaces
+        // every mind map (best-effort: never fail the detail on their account).
+        client.listMindMaps(id).catch(() => [] as Awaited<ReturnType<typeof client.listMindMaps>>),
       ]);
       const artifacts = artifactsRaw.map((a) => ({
         ...a,
         typeLabel: ARTIFACT_TYPE_LABEL[a.type] ?? `type:${a.type}`,
       }));
+      // Skip any mind map already present as a studio artifact (interactive
+      // ones can appear in both lists), keyed by id.
+      const seen = new Set(artifacts.map((a) => a.id));
+      for (const m of mindMaps) {
+        if (seen.has(m.id)) continue;
+        artifacts.push({
+          id: m.id,
+          title: m.title || 'Mind map',
+          type: ARTIFACT_TYPE.MIND_MAP,
+          typeLabel: 'mind-map',
+        } as (typeof artifacts)[number]);
+      }
       return { ...detail, artifacts };
     });
     res.json(result);

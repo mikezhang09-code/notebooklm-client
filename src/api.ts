@@ -10,7 +10,7 @@ import { resolve, basename, extname } from 'node:path';
 // SessionError used by addFileSource callers — not directly here
 import { parseEnvelopes } from './boq-parser.js';
 import { NB_RPC, NB_URLS, DEFAULT_USER_CONFIG, PLATFORM_WEB } from './rpc-ids.js';
-import { buildArtifactPayload } from './artifact-payloads.js';
+import { buildArtifactPayload, buildMindMapParams } from './artifact-payloads.js';
 import {
   parseCreateNotebook,
   parseListNotebooks,
@@ -449,6 +449,100 @@ export async function deleteNote(
   await callRpc(NB_RPC.DELETE_NOTE, [notebookId, null, [noteId]], `/notebook/${notebookId}`);
 }
 
+// ── Mind maps ──
+//
+// NotebookLM stores note-backed mind maps in the same collection as notes
+// (the GET_NOTES / cFji9 RPC returns both). A row is a mind map when its
+// content payload is a JSON object carrying a `"children":` or `"nodes":`
+// key — the same discriminator `listNotes` uses to *exclude* them. The
+// content is the `{name, children}` node tree, which is the real artifact
+// (not a screenshot).
+
+/** Whether a note-row content string is a serialised mind-map node tree. */
+export function isMindMapContent(content: string | null | undefined): boolean {
+  if (!content || !content.startsWith('{')) return false;
+  return content.includes('"children":') || content.includes('"nodes":');
+}
+
+/**
+ * List the note-backed mind maps in a notebook (id, title, raw JSON tree).
+ * Mirrors `listNotes`' row parsing but keeps only the mind-map rows.
+ */
+export async function listMindMaps(
+  callRpc: RpcCaller,
+  notebookId: string,
+): Promise<Array<{ id: string; title: string; content: string }>> {
+  const raw = await callRpc(NB_RPC.GET_NOTES, [notebookId], `/notebook/${notebookId}`);
+  const envelopes = parseEnvelopes(raw);
+  const first = envelopes[0];
+  if (!Array.isArray(first) || !Array.isArray(first[0])) return [];
+
+  const maps: Array<{ id: string; title: string; content: string }> = [];
+  for (const item of first[0]) {
+    if (!Array.isArray(item) || typeof item[0] !== 'string') continue;
+    // Soft-deleted row: [id, null, 2].
+    if (item[1] === null && item[2] === 2) continue;
+    const content =
+      typeof item[1] === 'string'
+        ? item[1]
+        : Array.isArray(item[1]) && typeof item[1][1] === 'string'
+          ? item[1][1]
+          : '';
+    if (!isMindMapContent(content)) continue;
+    let title = '';
+    if (Array.isArray(item[1]) && typeof item[1][4] === 'string') title = item[1][4];
+    maps.push({ id: item[0], title, content });
+  }
+  return maps;
+}
+
+/**
+ * Generate a note-backed mind map from the given sources and persist it as a
+ * note so it appears in the notebook's mind-map collection.
+ *
+ * `GENERATE_MIND_MAP` returns the `{name, children}` node tree synchronously
+ * at `result[0][0]`; we then create a note holding that JSON (matching the
+ * NotebookLM web client's own generate→persist chain). Returns the persisted
+ * note id, the derived title, and the raw JSON tree string.
+ */
+export async function generateMindMap(
+  callRpc: RpcCaller,
+  notebookId: string,
+  sourceIds: string[],
+  language = 'en',
+  instructions?: string,
+): Promise<{ noteId: string; title: string; tree: string }> {
+  const raw = await callRpc(
+    NB_RPC.GENERATE_MIND_MAP,
+    buildMindMapParams(sourceIds, language, instructions),
+    `/notebook/${notebookId}`,
+  );
+  const first = parseEnvelopes(raw)[0];
+  // Response decodes to [["{json tree}", "NotebookLM", [], 0]] — the tree
+  // string lives at [0][0]; tolerate a bare ["{json}", ...] too.
+  let tree = '';
+  if (Array.isArray(first) && Array.isArray(first[0]) && typeof first[0][0] === 'string') {
+    tree = first[0][0];
+  } else if (Array.isArray(first) && typeof first[0] === 'string') {
+    tree = first[0];
+  }
+  if (!tree) {
+    throw new Error('GENERATE_MIND_MAP returned no mind-map tree');
+  }
+
+  // Derive the title from the tree's root name when it's a non-empty string.
+  let title = 'Mind Map';
+  try {
+    const parsed = JSON.parse(tree) as { name?: unknown };
+    if (typeof parsed.name === 'string' && parsed.name) title = parsed.name;
+  } catch {
+    /* keep default title; persist the raw payload as-is */
+  }
+
+  const { noteId } = await createNote(callRpc, notebookId, title, tree);
+  return { noteId, title, tree };
+}
+
 // ── Sharing ──
 
 export async function getShareStatus(
@@ -544,6 +638,27 @@ export async function getInteractiveHtml(
     }
   }
   return '';
+}
+
+/**
+ * Fetch the `{name, children}` node tree for an *interactive* (studio-artifact)
+ * mind map. Unlike note-backed maps, interactive ones expose their tree at
+ * `[0][9][3]` of the GET_INTERACTIVE_HTML response (the HTML body is at
+ * `[0][9][0]`). Returns the raw JSON string, or null when not yet populated.
+ */
+export async function getInteractiveMindMapTree(
+  callRpc: RpcCaller,
+  artifactId: string,
+): Promise<string | null> {
+  const raw = await callRpc(NB_RPC.GET_INTERACTIVE_HTML, [artifactId]);
+  const first = parseEnvelopes(raw)[0];
+  if (!Array.isArray(first)) return null;
+  const options = first[0];
+  if (!Array.isArray(options)) return null;
+  const block = options[9];
+  if (!Array.isArray(block) || block.length <= 3) return null;
+  const leaf = block[3];
+  return typeof leaf === 'string' ? leaf : null;
 }
 
 export async function generateArtifact(

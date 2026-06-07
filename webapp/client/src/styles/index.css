@@ -2611,6 +2611,37 @@ body[data-theme='dark'] .pick-tile .g-ic {
   margin: 1.7em 0;
 }
 
+/* Mind-map node tree ({name, children}) rendered by the artifact viewer. */
+.mindmap-tree {
+  font-size: 14px;
+  line-height: 1.5;
+}
+.mindmap-tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+}
+.mindmap-tree ul.mm-root {
+  padding-left: 0;
+  border-left: 0;
+}
+.mindmap-tree li {
+  margin: 3px 0;
+}
+.mindmap-tree .mm-node {
+  display: inline-block;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-2);
+}
+.mindmap-tree > ul.mm-root > li > .mm-node {
+  font-weight: 700;
+  background: var(--card);
+  border-color: var(--tc, var(--accent));
+}
+
 /* document outline (table of contents) */
 .md-outline {
   width: 268px;
