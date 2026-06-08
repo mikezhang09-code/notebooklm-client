@@ -55,7 +55,14 @@ export type {
   SearchSnippet,
 } from './search.js';
 
-export { chatCorpus } from './chat.js';
+export { chatCorpus, chatCorpusStream } from './chat.js';
+export {
+  getChatPersist,
+  setChatPersist,
+  getChatThread,
+  saveChatThread,
+  deleteChatThread,
+} from './chat-history.js';
 export type {
   ChatTurn,
   ChatOptions,

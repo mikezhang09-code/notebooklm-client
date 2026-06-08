@@ -28,7 +28,14 @@ import {
   getObjectBuffer,
   searchCorpus,
   chatCorpus,
+  chatCorpusStream,
+  getChatPersist,
+  setChatPersist,
+  getChatThread,
+  saveChatThread,
+  deleteChatThread,
   type ChatTurn,
+  type ChatOptions,
   retryTranscription,
 } from '../corpus/index.js';
 import {
@@ -1235,6 +1242,60 @@ corpusRouter.post(
  * 503 if either the corpus is disabled OR the chat model is not configured
  * (set OCI_GENAI_CHAT_MODEL in .env to enable).
  */
+/**
+ * Validate + normalise a corpus-chat request body into ChatOptions. Returns an
+ * `{ error }` instead of throwing so both the JSON and SSE routes can surface a
+ * 400 in their own way. History is capped at the last 10 turns to bound prompt
+ * size — older turns rarely help the answer and just inflate the token bill.
+ */
+function parseChatRequest(
+  body: Record<string, unknown>,
+): { error: string } | { options: ChatOptions } {
+  const question = typeof body['question'] === 'string' ? body['question'].trim() : '';
+  if (question.length === 0) return { error: 'question is required' };
+  if (question.length > 4000) return { error: 'question too long (max 4000 chars)' };
+
+  const rawHistory = Array.isArray(body['history']) ? body['history'] : [];
+  const history: ChatTurn[] = [];
+  for (const t of rawHistory.slice(-10)) {
+    if (typeof t !== 'object' || t === null) continue;
+    const role = (t as { role?: unknown }).role;
+    const content = (t as { content?: unknown }).content;
+    if (
+      (role === 'user' || role === 'assistant') &&
+      typeof content === 'string' &&
+      content.trim().length > 0
+    ) {
+      history.push({ role, content });
+    }
+  }
+
+  return {
+    options: {
+      question,
+      history,
+      kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
+      kinds: Array.isArray(body['kinds'])
+        ? body['kinds'].filter((k): k is string => typeof k === 'string')
+        : undefined,
+      notebookId: typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
+      collectionId:
+        typeof body['collectionId'] === 'string' ? body['collectionId'] : undefined,
+      category: typeof body['category'] === 'string' ? body['category'] : undefined,
+      artifactId: typeof body['artifactId'] === 'string' ? body['artifactId'] : undefined,
+      maxSources: typeof body['maxSources'] === 'number' ? body['maxSources'] : undefined,
+      snippetsPerSource:
+        typeof body['snippetsPerSource'] === 'number'
+          ? body['snippetsPerSource']
+          : undefined,
+      maxDistance: typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,
+      chatProvider:
+        typeof body['chatProvider'] === 'string' ? body['chatProvider'] : undefined,
+      chatModel: typeof body['chatModel'] === 'string' ? body['chatModel'] : undefined,
+    },
+  };
+}
+
 corpusRouter.post(
   '/chat',
   asyncHandler(async (req, res) => {
@@ -1251,64 +1312,163 @@ corpusRouter.post(
       return;
     }
 
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const question =
-      typeof body['question'] === 'string' ? body['question'].trim() : '';
-    if (question.length === 0) {
-      res.status(400).json({ error: 'question is required' });
+    const parsed = parseChatRequest((req.body ?? {}) as Record<string, unknown>);
+    if ('error' in parsed) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-    if (question.length > 4000) {
-      res.status(400).json({ error: 'question too long (max 4000 chars)' });
-      return;
-    }
-
-    // Validate + normalize history; cap at the last 10 turns to bound prompt
-    // size. Anything older than that almost never improves the answer and
-    // just inflates the input-token bill.
-    const rawHistory = Array.isArray(body['history']) ? body['history'] : [];
-    const history: ChatTurn[] = [];
-    for (const t of rawHistory.slice(-10)) {
-      if (typeof t !== 'object' || t === null) continue;
-      const role = (t as { role?: unknown }).role;
-      const content = (t as { content?: unknown }).content;
-      if (
-        (role === 'user' || role === 'assistant') &&
-        typeof content === 'string' &&
-        content.trim().length > 0
-      ) {
-        history.push({ role, content });
-      }
-    }
-
-    const result = await chatCorpus(cfg, {
-      question,
-      history,
-      kind: typeof body['kind'] === 'string' ? body['kind'] : undefined,
-      kinds: Array.isArray(body['kinds'])
-        ? body['kinds'].filter((k): k is string => typeof k === 'string')
-        : undefined,
-      notebookId:
-        typeof body['notebookId'] === 'string' ? body['notebookId'] : undefined,
-      collectionId:
-        typeof body['collectionId'] === 'string' ? body['collectionId'] : undefined,
-      category: typeof body['category'] === 'string' ? body['category'] : undefined,
-      artifactId:
-        typeof body['artifactId'] === 'string' ? body['artifactId'] : undefined,
-      maxSources:
-        typeof body['maxSources'] === 'number' ? body['maxSources'] : undefined,
-      snippetsPerSource:
-        typeof body['snippetsPerSource'] === 'number'
-          ? body['snippetsPerSource']
-          : undefined,
-      maxDistance:
-        typeof body['maxDistance'] === 'number' ? body['maxDistance'] : undefined,
-      chatProvider:
-        typeof body['chatProvider'] === 'string' ? body['chatProvider'] : undefined,
-      chatModel:
-        typeof body['chatModel'] === 'string' ? body['chatModel'] : undefined,
-    });
+    const result = await chatCorpus(cfg, parsed.options);
     res.json(result);
+  }),
+);
+
+/**
+ * POST /api/corpus/chat/stream — same contract as /chat but streamed over SSE.
+ * Emits `delta` events ({ text }) as the answer is generated, then a final
+ * `result` event carrying the full ChatResult (sources, citations, timings).
+ */
+corpusRouter.post(
+  '/chat/stream',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    if (cfg.chatProvider === 'disabled') {
+      res.status(503).json({
+        error:
+          'corpus chat is disabled — set CHAT_PROVIDER or GEMINI_API_KEY in .env to enable',
+      });
+      return;
+    }
+
+    const parsed = parseChatRequest((req.body ?? {}) as Record<string, unknown>);
+    if ('error' in parsed) {
+      res.status(400).json({ error: parsed.error });
+      return;
+    }
+
+    const sse = openSseStream(res);
+    try {
+      const result = await chatCorpusStream(cfg, parsed.options, (text) => {
+        if (text) sse.event('delta', { text });
+      });
+      sse.result(result);
+    } catch (err) {
+      sse.error(err instanceof Error ? err.message : String(err));
+    }
+  }),
+);
+
+// ── Chat history persistence (the "save chats to the library" switch) ────────
+// GET  /chat/prefs           → { persist }              read the global switch
+// PUT  /chat/prefs           { persist }                set the global switch
+// GET  /chat/thread?key=…    → { messages }             load a saved thread
+// PUT  /chat/thread          { key, messages }          upsert a thread
+// DELETE /chat/thread?key=…                             delete a thread
+// All 503 when the corpus subsystem is disabled (no DB to read/write).
+
+/** Max serialised thread we'll persist — guards the DB against runaway input. */
+const MAX_THREAD_BYTES = 2 * 1024 * 1024;
+
+corpusRouter.get(
+  '/chat/prefs',
+  asyncHandler(async (_req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    res.json({ persist: await getChatPersist(cfg) });
+  }),
+);
+
+corpusRouter.put(
+  '/chat/prefs',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body['persist'] !== 'boolean') {
+      res.status(400).json({ error: 'persist (boolean) is required' });
+      return;
+    }
+    await setChatPersist(cfg, body['persist']);
+    res.json({ persist: body['persist'] });
+  }),
+);
+
+function readScopeKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const key = value.trim();
+  if (key.length === 0 || key.length > 256) return null;
+  return key;
+}
+
+corpusRouter.get(
+  '/chat/thread',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const key = readScopeKey(req.query['key']);
+    if (!key) {
+      res.status(400).json({ error: 'key (1..256 chars) is required' });
+      return;
+    }
+    const messages = (await getChatThread(cfg, key)) ?? [];
+    res.json({ messages });
+  }),
+);
+
+corpusRouter.put(
+  '/chat/thread',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const key = readScopeKey(body['key']);
+    if (!key) {
+      res.status(400).json({ error: 'key (1..256 chars) is required' });
+      return;
+    }
+    if (!Array.isArray(body['messages'])) {
+      res.status(400).json({ error: 'messages (array) is required' });
+      return;
+    }
+    if (JSON.stringify(body['messages']).length > MAX_THREAD_BYTES) {
+      res.status(413).json({ error: 'thread too large' });
+      return;
+    }
+    await saveChatThread(cfg, key, body['messages']);
+    res.json({ ok: true });
+  }),
+);
+
+corpusRouter.delete(
+  '/chat/thread',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const key = readScopeKey(req.query['key']);
+    if (!key) {
+      res.status(400).json({ error: 'key (1..256 chars) is required' });
+      return;
+    }
+    await deleteChatThread(cfg, key);
+    res.json({ ok: true });
   }),
 );
 

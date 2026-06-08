@@ -71,6 +71,84 @@ export interface SseHandlers {
   onError?: (message: string) => void;
 }
 
+export interface JsonSseHandlers {
+  onDelta?: (text: string) => void;
+  onResult?: (data: unknown) => void;
+  onError?: (message: string) => void;
+}
+
+/**
+ * POST a JSON body and consume the SSE response. Handles `delta` (incremental
+ * text), `result` (final payload), and `error` events. Used for streamed corpus
+ * chat. Throws ApiError on a non-OK response (e.g. 503 when chat is disabled).
+ */
+export async function streamJsonSse(
+  path: string,
+  body: unknown,
+  handlers: JsonSseHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: buildHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = ((await res.json()) as { error?: string })?.error ?? '';
+    } catch {
+      detail = await res.text().catch(() => '');
+    }
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
+  }
+  if (!res.body) {
+    handlers.onError?.('Empty SSE response');
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const blocks = buf.split(/\r?\n\r?\n/);
+    buf = blocks.pop() ?? '';
+    for (const block of blocks) {
+      let event = 'message';
+      const dataLines: string[] = [];
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith(':')) continue;
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      const data = dataLines.join('\n');
+      if (!data) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        if (event === 'error') handlers.onError?.(data);
+        continue;
+      }
+      if (event === 'delta') {
+        const text = (parsed as { text?: string })?.text;
+        if (typeof text === 'string') handlers.onDelta?.(text);
+      } else if (event === 'result') {
+        handlers.onResult?.(parsed);
+      } else if (event === 'error') {
+        const msg =
+          typeof parsed === 'object' && parsed && 'message' in parsed
+            ? String((parsed as { message: string }).message)
+            : String(data);
+        handlers.onError?.(msg);
+      }
+    }
+  }
+}
+
 /**
  * Stream a POST with SSE response. Uses fetch + ReadableStream because EventSource
  * does not support request bodies or custom headers across all browsers.

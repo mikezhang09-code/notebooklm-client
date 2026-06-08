@@ -7,6 +7,8 @@ import type { WorkflowProgress } from 'notebooklm-client';
 
 export interface SseStream {
   progress: (p: WorkflowProgress) => void;
+  /** Emit a custom named event (e.g. streamed `delta` chunks). */
+  event: (name: string, data: unknown) => void;
   result: (data: unknown) => void;
   error: (message: string) => void;
   close: () => void;
@@ -59,6 +61,7 @@ export function openSseStream(res: Response): SseStream {
 
   return {
     progress: (p) => send('progress', p),
+    event: (name, data) => send(name, data),
     result: (data) => {
       send('result', data);
       close();

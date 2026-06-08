@@ -1,5 +1,5 @@
 /** Client for the corpus artifacts aggregation (GET /api/corpus/artifacts). */
-import { apiGet, apiJson, apiDelete } from './api';
+import { apiGet, apiJson, apiDelete, streamJsonSse } from './api';
 import { typeKeyFor } from './registry';
 import type { TypeKey } from './registry';
 
@@ -266,6 +266,8 @@ export interface CorpusChatResult {
   retrievalMs: number;
   chatMs: number;
   noSources: boolean;
+  /** True if the answer was grounded in a broad scope overview, not a kNN match. */
+  overview?: boolean;
   finishReason?: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -276,6 +278,79 @@ export function corpusChat(
   input: { question: string; history?: CorpusChatTurn[] } & CorpusChatScope,
 ): Promise<CorpusChatResult> {
   return apiJson('/api/corpus/chat', input);
+}
+
+/** A persisted chat message (subset of the UI's message shape). */
+export interface CorpusChatStoredMsg {
+  role: 'user' | 'bot';
+  text: string;
+  sources?: CorpusChatSource[];
+  overview?: boolean;
+}
+
+/** Read the global "save chats to the library" switch. */
+export async function getChatPersist(): Promise<boolean> {
+  const r = await apiGet<{ persist: boolean }>('/api/corpus/chat/prefs');
+  return Boolean(r.persist);
+}
+
+/** Set the global "save chats to the library" switch; returns the new value. */
+export async function setChatPersist(persist: boolean): Promise<boolean> {
+  const r = await apiJson<{ persist: boolean }>('/api/corpus/chat/prefs', { persist }, 'PUT');
+  return Boolean(r.persist);
+}
+
+/** Load a saved thread for a scope key (empty array if none / not configured). */
+export async function getChatThread(key: string): Promise<CorpusChatStoredMsg[]> {
+  const r = await apiGet<{ messages: CorpusChatStoredMsg[] }>(
+    `/api/corpus/chat/thread?key=${encodeURIComponent(key)}`,
+  );
+  return Array.isArray(r.messages) ? r.messages : [];
+}
+
+/** Upsert a saved thread for a scope key. */
+export async function saveChatThread(
+  key: string,
+  messages: CorpusChatStoredMsg[],
+): Promise<void> {
+  await apiJson('/api/corpus/chat/thread', { key, messages }, 'PUT');
+}
+
+/** Delete a saved thread for a scope key. */
+export async function deleteChatThread(key: string): Promise<void> {
+  await apiDelete(`/api/corpus/chat/thread?key=${encodeURIComponent(key)}`);
+}
+
+/**
+ * Streamed corpus chat. Invokes `onDelta` with each incremental text fragment as
+ * the answer is generated, and resolves with the final result (sources,
+ * citations, timings) once the stream completes.
+ */
+export function corpusChatStream(
+  input: { question: string; history?: CorpusChatTurn[] } & CorpusChatScope,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<CorpusChatResult> {
+  return new Promise<CorpusChatResult>((resolve, reject) => {
+    let final: CorpusChatResult | null = null;
+    streamJsonSse(
+      '/api/corpus/chat/stream',
+      input,
+      {
+        onDelta,
+        onResult: (data) => {
+          final = data as CorpusChatResult;
+        },
+        onError: (msg) => reject(new Error(msg)),
+      },
+      signal,
+    )
+      .then(() => {
+        if (final) resolve(final);
+        else reject(new Error('Stream ended without a result'));
+      })
+      .catch(reject);
+  });
 }
 
 /** Returns a long-lived share URL (server shape: { shareUrl } or { url }). */

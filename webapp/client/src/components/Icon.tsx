@@ -49,6 +49,8 @@ const SPRITE_DEFS = `
 <g id="i-gear"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5l1.3 2.2 2.5-.4.4 2.5 2.2 1.3-1.1 2.3 1.1 2.3-2.2 1.3-.4 2.5-2.5-.4L12 20.5l-1.3-2.2-2.5.4-.4-2.5-2.2-1.3 1.1-2.3-1.1-2.3 2.2-1.3.4-2.5 2.5.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></g>
 <g id="i-pulse"><path d="M3 12h4l2-6 4 13 2.5-7H21" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
 <g id="i-doc"><rect x="5" y="3.5" width="14" height="17" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
+<g id="i-copy"><rect x="8.5" y="8.5" width="11" height="11" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 15.5A1.5 1.5 0 0 1 4 14V5.5A1.5 1.5 0 0 1 5.5 4H14a1.5 1.5 0 0 1 1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
+<g id="i-stop"><rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor" stroke="none"/></g>
 `;
 
 export function IconSprite() {
