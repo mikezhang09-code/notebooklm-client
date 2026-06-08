@@ -1131,6 +1131,31 @@ body[data-theme='dark'] .item .t-ic {
   font-family: 'JetBrains Mono', monospace;
 }
 
+/* clickable tag chips on cards and table rows */
+.item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+.tag-chip {
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.tag-chip:hover {
+  border-color: var(--muted);
+  color: var(--ink);
+}
+
 /* provenance badge */
 .prov {
   display: inline-flex;
@@ -2063,12 +2088,21 @@ body[data-theme='dark'] .kind-research {
   gap: 11px;
   min-width: 0;
 }
+.fft-name-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
 .fft-nm {
   font-weight: 600;
   font-size: 13.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.fft-name-col .item-tags {
+  margin-top: 0;
 }
 .fft-from {
   font-size: 13px;
@@ -2530,6 +2564,83 @@ body[data-theme='dark'] .pick-tile .g-ic {
 }
 .health-pill.bad .hd {
   background: var(--accent);
+}
+
+/* ---- Diagnose · Search index backfill ---- */
+.idx-group {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.idx-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.idx-group-head b {
+  font-size: 13px;
+}
+.idx-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.idx-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  min-width: 0;
+}
+.idx-nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.idx-hint {
+  flex-shrink: 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.idx-more {
+  color: var(--muted) !important;
+  font-style: italic;
+}
+.idx-progress {
+  margin-top: 12px;
+}
+.idx-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.idx-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.idx-pline {
+  display: block;
+  margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .empty {

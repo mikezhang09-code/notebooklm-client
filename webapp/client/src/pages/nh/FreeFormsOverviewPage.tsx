@@ -13,11 +13,20 @@ import UploadDrawer from '../../components/UploadDrawer';
 import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
 import MarkdownEditor from '../../components/MarkdownEditor';
 import { TYPES, type TypeKey } from '../../lib/registry';
-import { listItems, fetchNotebookMap, resolveFrom, type Item } from '../../lib/artifacts';
+import {
+  listItems,
+  listTags,
+  fetchNotebookMap,
+  resolveFrom,
+  type Item,
+  type TagCount,
+} from '../../lib/artifacts';
 
 export default function FreeFormsOverviewPage() {
   const navigate = useNavigate();
   const [items, setItems] = useState<Item[]>([]);
+  const [tags, setTags] = useState<TagCount[]>([]);
+  const [activeTag, setActiveTag] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Item | null>(null);
@@ -29,15 +38,17 @@ export default function FreeFormsOverviewPage() {
   const [genType, setGenType] = useState<TypeKey | null>(null);
   const [noteEditing, setNoteEditing] = useState(false);
 
-  async function reload() {
+  async function reload(tag = activeTag) {
     setLoading(true);
     setError(null);
     try {
-      const [{ items }, nbMap] = await Promise.all([
-        listItems({ limit: 500 }),
+      const [{ items }, nbMap, tagList] = await Promise.all([
+        listItems({ tag: tag ?? undefined, limit: 500 }),
         fetchNotebookMap(),
+        listTags(),
       ]);
       setItems(items.map((it) => ({ ...it, from: resolveFrom(it, nbMap) })));
+      setTags(tagList);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -46,7 +57,9 @@ export default function FreeFormsOverviewPage() {
   }
   useEffect(() => {
     void reload();
-  }, []);
+    // reload reads activeTag; re-run when the active tag changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTag]);
 
   const byType = useMemo(() => {
     const m = new Map<TypeKey, Item[]>();
@@ -84,6 +97,27 @@ export default function FreeFormsOverviewPage() {
         </div>
       </div>
 
+      {tags.length > 0 && (
+        <div className="chips" style={{ marginBottom: 16 }}>
+          <button
+            className={`chip${activeTag === null ? ' on' : ''}`}
+            onClick={() => setActiveTag(null)}
+          >
+            All tags
+          </button>
+          {tags.map((t) => (
+            <button
+              key={t.tag}
+              className={`chip${activeTag === t.tag ? ' on' : ''}`}
+              onClick={() => setActiveTag(activeTag === t.tag ? null : t.tag)}
+            >
+              #{t.tag}
+              <span className="c-x">{t.count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {error && <div className="empty" style={{ color: 'var(--accent)' }}>{error}</div>}
       {!loading && items.length === 0 && !error && (
         <div className="empty">
@@ -109,7 +143,7 @@ export default function FreeFormsOverviewPage() {
             </div>
             <div className="item-grid">
               {list.slice(0, 4).map((it) => (
-                <ItemCard key={it.id} item={it} onOpen={setOpen} />
+                <ItemCard key={it.id} item={it} onOpen={setOpen} onTag={setActiveTag} />
               ))}
             </div>
           </div>

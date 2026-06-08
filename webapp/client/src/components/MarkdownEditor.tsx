@@ -52,7 +52,7 @@ export default function MarkdownEditor({
     try {
       if (editId) {
         const r = await updateArtifactContent(editId, { markdown: md, title: name });
-        toast(r.embedSkipped ? 'Saved — not re-indexed (embedding quota exceeded)' : 'Saved');
+        toast(r.embedSkipped ? 'Saved — not re-indexed (embedding failed; backfill in Settings → Diagnose)' : 'Saved');
         onSaved();
         return;
       }
@@ -68,7 +68,7 @@ export default function MarkdownEditor({
       const r = await apiFormData<{ embedSkipped?: boolean }>('/api/corpus/ingest', form);
       toast(
         r.embedSkipped
-          ? 'Note saved — not indexed for search (embedding quota exceeded)'
+          ? 'Note saved — not indexed for search (embedding failed; backfill in Settings → Diagnose)'
           : collectionId
             ? 'Note saved to collection'
             : 'Note saved',

@@ -93,7 +93,7 @@ export default function UploadDrawer({
       const where = collectionId ? ' to collection' : '';
       toast(
         skipped
-          ? `Uploaded ${okCount} file${okCount === 1 ? '' : 's'}${where} — some not indexed (embedding quota exceeded)`
+          ? `Uploaded ${okCount} file${okCount === 1 ? '' : 's'}${where} — some not indexed (embedding failed; backfill in Settings → Diagnose)`
           : `Uploaded ${okCount} file${okCount === 1 ? '' : 's'}${where}`,
       );
       // Only auto-close when everything succeeded; on partial failure keep the

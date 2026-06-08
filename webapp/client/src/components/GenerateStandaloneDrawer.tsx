@@ -138,7 +138,7 @@ export default function GenerateStandaloneDrawer({
       setSaved(true);
       toast(
         r.embedSkipped
-          ? 'Saved — not indexed for search (embedding quota exceeded)'
+          ? 'Saved — not indexed for search (embedding failed; backfill in Settings → Diagnose)'
           : collectionId
             ? 'Saved to collection'
             : 'Saved to library',

@@ -39,6 +39,7 @@ export default function FreeFormTypePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
+  const [activeTag, setActiveTag] = useState<string | null>(null);
   const [open, setOpen] = useState<Item | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -77,7 +78,18 @@ export default function FreeFormTypePage() {
     return c;
   }, [items]);
 
-  const rows = filter === 'all' ? items : items.filter((it) => it.provenance === filter);
+  // Distinct tags across this type's items, most-used first.
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of items) for (const tg of it.tags) m.set(tg, (m.get(tg) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [items]);
+
+  const rows = items.filter(
+    (it) =>
+      (filter === 'all' || it.provenance === filter) &&
+      (activeTag === null || it.tags.includes(activeTag)),
+  );
   // Distinct backend kinds backing this display type (e.g. data-table + data_table).
   const kinds = useMemo(() => [...new Set(items.map((it) => it.kind))], [items]);
 
@@ -144,6 +156,27 @@ export default function FreeFormTypePage() {
         </div>
       )}
 
+      {tab === 'list' && tagCounts.length > 0 && (
+        <div className="chips" style={{ marginBottom: 16 }}>
+          <button
+            className={`chip${activeTag === null ? ' on' : ''}`}
+            onClick={() => setActiveTag(null)}
+          >
+            All tags
+          </button>
+          {tagCounts.map(([tag, count]) => (
+            <button
+              key={tag}
+              className={`chip${activeTag === tag ? ' on' : ''}`}
+              onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+            >
+              #{tag}
+              <span className="c-x">{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {tab === 'list' &&
         (!loading && rows.length === 0 ? (
         <div className="empty">
@@ -168,7 +201,25 @@ export default function FreeFormTypePage() {
                   <span className="t-ic" style={{ width: 32, height: 32 }}>
                     <Icon id={t.icon} />
                   </span>
-                  <span className="fft-nm">{it.title}</span>
+                  <div className="fft-name-col">
+                    <span className="fft-nm">{it.title}</span>
+                    {it.tags.length > 0 && (
+                      <span className="item-tags">
+                        {it.tags.slice(0, 4).map((tag) => (
+                          <button
+                            key={tag}
+                            className="tag-chip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveTag(activeTag === tag ? null : tag);
+                            }}
+                          >
+                            #{tag}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <span>
                   <span className={`prov p-${it.provenance}`}>

@@ -93,17 +93,31 @@ export async function listItems(params?: {
   kind?: string;
   category?: string;
   notebookId?: string;
+  tag?: string;
   limit?: number;
 }): Promise<{ items: Item[]; total: number }> {
   const qs = new URLSearchParams();
   if (params?.kind) qs.set('kind', params.kind);
   if (params?.category) qs.set('category', params.category);
   if (params?.notebookId) qs.set('notebookId', params.notebookId);
+  if (params?.tag) qs.set('tag', params.tag);
   qs.set('limit', String(params?.limit ?? 200));
   const res = await apiGet<{ items: RawRow[]; total: number }>(
     `/api/corpus/artifacts?${qs.toString()}`,
   );
   return { items: (res.items ?? []).map(normalize), total: res.total };
+}
+
+/** A distinct tag and how many artifacts carry it. */
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
+/** Fetch the distinct artifact tags with usage counts (most-used first). */
+export async function listTags(): Promise<TagCount[]> {
+  const res = await apiGet<{ tags: TagCount[] }>(`/api/corpus/tags`);
+  return res.tags ?? [];
 }
 
 /** Fetch a fresh ~1h PAR download URL for an artifact. */

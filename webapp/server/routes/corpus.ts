@@ -46,6 +46,15 @@ import {
   updateCollection,
   deleteCollection,
 } from '../corpus/collections.js';
+import {
+  getIndexStatus,
+  listUnchunked,
+  listTargets,
+  reembedOne,
+  isMediaKind,
+  type Row,
+} from '../corpus/reembed-core.js';
+import { openSseStream } from '../lib/sse.js';
 
 export const corpusRouter = Router();
 
@@ -414,6 +423,13 @@ corpusRouter.get(
       whereClauses.push('collection_id = :collectionId');
       filterBinds['collectionId'] = q['collectionId'];
     }
+    if (q['tag']) {
+      // Tag-membership filter, index-backed by ix_artifacts_tags_mv. Tags are
+      // stored lowercased (see PATCH /artifacts/:id), so normalize the query
+      // term to match.
+      whereClauses.push(`JSON_EXISTS(tags, '$[*]?(@ == $t)' PASSING :tag AS "t")`);
+      filterBinds['tag'] = q['tag'].toLowerCase();
+    }
     const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
     const listBinds = { ...filterBinds, lim: limit, off: offset };
 
@@ -447,6 +463,168 @@ corpusRouter.get(
     });
 
     res.json({ items, total, limit, offset });
+  }),
+);
+
+/**
+ * GET /api/corpus/tags
+ *
+ * Distinct artifact tags with their usage counts, most-used first. Powers the
+ * browse facet / tag filter bar. Flattens the JSON `tags` array per row via
+ * JSON_TABLE and groups.
+ *
+ * Returns `{ tags: [{ tag, count }] }`.
+ */
+corpusRouter.get(
+  '/tags',
+  asyncHandler(async (_req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const rows = await withConnection(cfg, async (conn) => {
+      const result = await conn.execute<{ TAG: string; CNT: number }>(
+        `SELECT jt.tag AS tag, COUNT(*) AS cnt
+           FROM artifacts a,
+                JSON_TABLE(a.tags, '$[*]' COLUMNS (tag VARCHAR2(256) PATH '$')) jt
+          WHERE jt.tag IS NOT NULL
+          GROUP BY jt.tag
+          ORDER BY cnt DESC, jt.tag`,
+        {},
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      return result.rows ?? [];
+    });
+    res.json({ tags: rows.map((r) => ({ tag: r.TAG, count: Number(r.CNT) })) });
+  }),
+);
+
+// ─────────────────────────────────────────── search-index backfill (M8) ──
+
+/** Shape one un-chunked artifact row for the client list. */
+function unchunkedItem(r: Row) {
+  return {
+    id: r.ID,
+    title: r.TITLE,
+    kind: r.KIND,
+    mimeType: r.MIME_TYPE,
+    createdAt: r.CREATED_AT ? new Date(r.CREATED_AT).toISOString() : null,
+  };
+}
+
+/**
+ * GET /api/corpus/index-status
+ *
+ * Counts for the Diagnose → Search index panel:
+ *   { total, chunked, fixable, media, provider }
+ * `fixable` = 0-chunk docs backfill can index; `media` = audio/video awaiting
+ * transcription (0-chunk by design).
+ */
+corpusRouter.get(
+  '/index-status',
+  asyncHandler(async (_req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const status = await getIndexStatus(cfg);
+    res.json({ ...status, provider: cfg.embeddingProvider });
+  }),
+);
+
+/**
+ * GET /api/corpus/unchunked
+ *
+ * The un-chunked artifacts split into the two groups the UI shows:
+ *   { fixable: [...], media: [...] }
+ */
+corpusRouter.get(
+  '/unchunked',
+  asyncHandler(async (_req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const { fixable, media } = await listUnchunked(cfg);
+    res.json({
+      fixable: fixable.map(unchunkedItem),
+      media: media.map(unchunkedItem),
+    });
+  }),
+);
+
+/**
+ * POST /api/corpus/reembed  — multipart/form-data, SSE response
+ *
+ * Backfills chunks for un-chunked artifacts, streaming per-document progress.
+ * Field `ids` (optional) is a JSON array of artifact ids to target; when
+ * omitted, every *fixable* (non-media) 0-chunk artifact is processed. Audio/
+ * video is always excluded — it has no text until transcription runs.
+ *
+ * Emits SSE `progress` events ({ status, message, index, total, done, … }) per
+ * document and a final `result` event ({ tally, processed }).
+ */
+corpusRouter.post(
+  '/reembed',
+  upload.none(),
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+
+    // Resolve the target rows: explicit ids (media filtered out) or all fixable.
+    const body = (req.body ?? {}) as { ids?: unknown };
+    let ids: string[] = [];
+    if (typeof body.ids === 'string' && body.ids.trim()) {
+      try {
+        const parsed = JSON.parse(body.ids);
+        if (Array.isArray(parsed)) ids = parsed.map((x) => String(x));
+      } catch {
+        res.status(400).json({ error: 'ids must be a JSON array string' });
+        return;
+      }
+    }
+    const targets: Row[] = ids.length
+      ? (await listTargets(cfg, ids)).filter((r) => !isMediaKind(r.KIND))
+      : (await listUnchunked(cfg)).fixable;
+
+    const stream = openSseStream(res);
+    const tally: Record<string, number> = {};
+    let processed = 0;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        if (stream.closed) break; // client disconnected
+        const row = targets[i]!;
+        const o = await reembedOne(cfg, row, true);
+        tally[o.status] = (tally[o.status] ?? 0) + 1;
+        processed++;
+        stream.progress({
+          status: o.status,
+          message:
+            o.status === 'indexed'
+              ? `${row.TITLE} — ${o.chunks} chunks${o.viaOcr ? ' (via OCR)' : ''}`
+              : o.status === 'no-text'
+                ? `${row.TITLE} — no extractable text`
+                : `${row.TITLE} — ${o.error ?? o.status}`,
+          index: i + 1,
+          total: targets.length,
+          artifactId: row.ID,
+          chunks: o.chunks ?? 0,
+          viaOcr: !!o.viaOcr,
+        } as unknown as Parameters<typeof stream.progress>[0]);
+        // Gentle throttle between live OCR/embed calls (free-tier friendliness),
+        // matching the CLI. Skip the wait after the last item.
+        if (i < targets.length - 1) await new Promise((r) => setTimeout(r, 3000));
+      }
+      stream.result({ tally, processed, total: targets.length });
+    } catch (err) {
+      stream.error(err instanceof Error ? err.message : String(err));
+    }
   }),
 );
 

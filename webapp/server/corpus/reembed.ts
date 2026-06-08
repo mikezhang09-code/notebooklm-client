@@ -1,172 +1,17 @@
 /**
- * Re-index artifacts that have no chunks.
+ * Re-index artifacts that have no chunks (CLI wrapper).
  *
- * For each 0-chunk artifact: fetch its blob from Object Storage → extract text
- * → chunk → embed (SEARCH_DOCUMENT) → insert chunk rows. Fixes documents that
- * were stored without an index (e.g. an embedding 429 at ingest time, or a
- * transient extraction failure). Docs with no extractable text (scanned/image
- * PDFs, media) are reported as 'no-text' and left untouched.
+ * The actual logic lives in `reembed-core.ts`, shared with the
+ * `/api/corpus/reembed` route (Diagnose → Search index panel). This file is
+ * just the command-line front-end.
  *
  * Usage (from webapp/):
  *   npx tsx server/corpus/reembed.ts                 # dry run — list 0-chunk docs
  *   npx tsx server/corpus/reembed.ts --apply         # extract + embed + write
  *   npx tsx server/corpus/reembed.ts --apply <id>... # only the given artifact ids
  */
-import oracledb from 'oracledb';
-import { getCorpusConfig, type CorpusConfig } from './config.js';
-import { withConnection } from './oci/db.js';
-import { getObjectBuffer } from './oci/storage.js';
-import { embedTexts } from './oci/genai.js';
-import { geminiExtractText, isOcrableMime } from './oci/gemini-ocr.js';
-import { extract } from './extract/index.js';
-import { chunkText } from './chunk.js';
-import { newId } from './ulid.js';
-
-interface Row {
-  ID: string;
-  TITLE: string;
-  MIME_TYPE: string | null;
-  OBJECT_NAME: string;
-}
-
-type Status =
-  | 'indexed'
-  | 'would-index'
-  | 'would-ocr'
-  | 'no-text'
-  | 'fetch-failed'
-  | 'ocr-failed'
-  | 'embed-failed';
-interface Outcome {
-  status: Status;
-  chunks?: number;
-  chars?: number;
-  error?: string;
-  viaOcr?: boolean;
-}
-
-/** Real mime for OCR: fall back to the filename when the DB has octet-stream. */
-function effectiveMime(mime: string | null, objectName: string): string | undefined {
-  const m = (mime ?? '').toLowerCase();
-  if (m && m !== 'application/octet-stream') return m;
-  const ext = (objectName.split('.').pop() ?? '').toLowerCase();
-  const byExt: Record<string, string> = {
-    pdf: 'application/pdf',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    webp: 'image/webp',
-    gif: 'image/gif',
-    bmp: 'image/bmp',
-    tiff: 'image/tiff',
-  };
-  return byExt[ext] ?? (m || undefined);
-}
-
-/** 0-chunk artifacts (or the explicit ids), newest first. */
-async function listTargets(cfg: CorpusConfig, ids: string[]): Promise<Row[]> {
-  return withConnection(cfg, async (conn) => {
-    if (ids.length > 0) {
-      const placeholders = ids.map((_, i) => `:id${i}`);
-      const binds: Record<string, string> = {};
-      ids.forEach((id, i) => (binds[`id${i}`] = id));
-      const r = await conn.execute<Row>(
-        `SELECT id, title, mime_type, object_name
-           FROM artifacts WHERE id IN (${placeholders.join(', ')})`,
-        binds,
-        { outFormat: oracledb.OUT_FORMAT_OBJECT },
-      );
-      return r.rows ?? [];
-    }
-    const r = await conn.execute<Row>(
-      `SELECT a.id, a.title, a.mime_type, a.object_name
-         FROM artifacts a
-        WHERE NOT EXISTS (SELECT 1 FROM artifact_chunks c WHERE c.artifact_id = a.id)
-        ORDER BY a.created_at DESC`,
-      {},
-      { outFormat: oracledb.OUT_FORMAT_OBJECT },
-    );
-    return r.rows ?? [];
-  });
-}
-
-async function reembedOne(cfg: CorpusConfig, row: Row, apply: boolean): Promise<Outcome> {
-  let buffer: Buffer;
-  try {
-    buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
-  } catch (err) {
-    return { status: 'fetch-failed', error: err instanceof Error ? err.message : String(err) };
-  }
-
-  // First try the plain text extractors (cheap). If they find nothing and the
-  // file is a PDF/image, fall back to Gemini OCR.
-  let text = await extract(buffer, row.MIME_TYPE ?? undefined, row.OBJECT_NAME);
-  let viaOcr = false;
-  if (text.trim().length === 0) {
-    const mime = effectiveMime(row.MIME_TYPE, row.OBJECT_NAME);
-    if (isOcrableMime(mime)) {
-      if (!apply) return { status: 'would-ocr' };
-      try {
-        text = await geminiExtractText(cfg, buffer, mime!, row.TITLE);
-        viaOcr = true;
-      } catch (err) {
-        return { status: 'ocr-failed', error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  }
-
-  const clean = text.trim();
-  const chunks = clean ? chunkText(text) : [];
-  if (chunks.length === 0) return { status: 'no-text', chars: clean.length };
-  if (!apply) return { status: 'would-index', chunks: chunks.length, chars: clean.length };
-
-  let vectors: number[][];
-  try {
-    vectors = await embedTexts(cfg, chunks.map((c) => c.text), 'SEARCH_DOCUMENT');
-  } catch (err) {
-    return { status: 'embed-failed', error: err instanceof Error ? err.message : String(err) };
-  }
-  if (vectors.length !== chunks.length) {
-    return { status: 'embed-failed', error: `got ${vectors.length} vectors for ${chunks.length} chunks` };
-  }
-
-  await withConnection(cfg, async (conn) => {
-    // Defensive: clear any partial chunk rows before reinserting.
-    await conn.execute(`DELETE FROM artifact_chunks WHERE artifact_id = :aid`, { aid: row.ID }, { autoCommit: false });
-    const insertRows = chunks.map((c, i) => ({
-      cid: newId(),
-      aid: row.ID,
-      ord: c.ordinal,
-      txt: c.text,
-      cs: c.charStart,
-      ce: c.charEnd,
-      tc: c.tokenEstimate,
-      emb: Float32Array.from(vectors[i] as number[]),
-    }));
-    await conn.executeMany(
-      `INSERT INTO artifact_chunks
-         (id, artifact_id, ordinal, text, char_start, char_end, token_count, embedding)
-       VALUES (:cid, :aid, :ord, :txt, :cs, :ce, :tc, :emb)`,
-      insertRows as unknown as oracledb.BindParameters[],
-      {
-        bindDefs: {
-          cid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
-          aid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
-          ord: { type: oracledb.DB_TYPE_NUMBER },
-          txt: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 32000 },
-          cs: { type: oracledb.DB_TYPE_NUMBER },
-          ce: { type: oracledb.DB_TYPE_NUMBER },
-          tc: { type: oracledb.DB_TYPE_NUMBER },
-          emb: { type: oracledb.DB_TYPE_VECTOR },
-        },
-        autoCommit: false,
-      },
-    );
-    await conn.commit();
-  });
-
-  return { status: 'indexed', chunks: chunks.length, chars: clean.length, viaOcr };
-}
+import { getCorpusConfig } from './config.js';
+import { listTargets, reembedOne, type Status } from './reembed-core.js';
 
 async function main() {
   const cfg = await getCorpusConfig();
