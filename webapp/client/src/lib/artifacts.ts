@@ -136,13 +136,15 @@ export type ViewPayload =
   | { type: 'pdf'; downloadUrl: string; mimeType?: string }
   | { type: 'office'; officeViewerUrl: string; downloadUrl: string; mimeType?: string }
   | { type: 'image'; downloadUrl: string; mimeType?: string }
+  | { type: 'audio'; downloadUrl: string; mimeType?: string }
+  | { type: 'video'; downloadUrl: string; mimeType?: string }
   | { type: 'html'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'markdown'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'text'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'mindmap'; tree: MindNode; downloadUrl: string; mimeType?: string }
   | { type: 'unsupported'; downloadUrl: string; mimeType?: string };
 
-/** Fetch inline-render info for an artifact (pdf/office/image/html/text/unsupported). */
+/** Fetch inline-render info for an artifact (pdf/office/image/audio/video/html/text/unsupported). */
 export function getView(id: string): Promise<ViewPayload> {
   return apiGet<ViewPayload>(`/api/corpus/artifacts/${id}/view`);
 }
@@ -209,6 +211,38 @@ export function saveFromJob(input: {
   collectionId?: string;
 }): Promise<{ id: string; embedSkipped?: boolean }> {
   return apiJson('/api/corpus/save-from-job', input);
+}
+
+/** A notebook's library-side tags (propagate to its saved artifacts). */
+export interface NotebookTags {
+  id: string;
+  title: string | null;
+  tags: string[];
+}
+
+/** Fetch a notebook's library tags (empty list if never tagged / corpus off). */
+export async function getNotebookTags(notebookId: string): Promise<string[]> {
+  try {
+    const r = await apiGet<NotebookTags>(
+      `/api/corpus/notebooks/${encodeURIComponent(notebookId)}/tags`,
+    );
+    return r.tags ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Set a notebook's library tags; propagates onto its saved artifacts server-side. */
+export async function setNotebookTags(
+  notebookId: string,
+  tags: string[],
+  title?: string,
+): Promise<{ tags: string[]; artifactsUpdated: number }> {
+  return apiJson(
+    `/api/corpus/notebooks/${encodeURIComponent(notebookId)}/tags`,
+    { tags, title },
+    'PATCH',
+  );
 }
 
 /** Fetch notebook id → title (for resolving the "From" column on notebooklm items). */

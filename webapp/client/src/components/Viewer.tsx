@@ -42,6 +42,8 @@ export default function Viewer({
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  // Set when an <audio>/<video> element can't decode the file (unsupported codec).
+  const [mediaError, setMediaError] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -208,6 +210,32 @@ export default function Viewer({
                 />
               </div>
             )}
+            {view?.type === 'video' &&
+              (mediaError ? (
+                <MediaFallback kind="video" url={view.downloadUrl} />
+              ) : (
+                <div style={{ display: 'grid', placeItems: 'center', minHeight: '100%', padding: 24 }}>
+                  <video
+                    src={view.downloadUrl}
+                    controls
+                    onError={() => setMediaError(true)}
+                    style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 8, boxShadow: 'var(--shadow)' }}
+                  />
+                </div>
+              ))}
+            {view?.type === 'audio' &&
+              (mediaError ? (
+                <MediaFallback kind="audio" url={view.downloadUrl} />
+              ) : (
+                <div style={{ display: 'grid', placeItems: 'center', minHeight: '100%', padding: 24 }}>
+                  <audio
+                    src={view.downloadUrl}
+                    controls
+                    onError={() => setMediaError(true)}
+                    style={{ width: 'min(560px, 90%)' }}
+                  />
+                </div>
+              ))}
             {view?.type === 'html' && (
               <MarkdownView
                 ref={bodyRef}
@@ -270,6 +298,19 @@ export default function Viewer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Shown when the browser can't decode an audio/video file's codec. */
+function MediaFallback({ kind, url }: { kind: 'audio' | 'video'; url: string }) {
+  return (
+    <div className="empty">
+      <Icon id={kind === 'video' ? 'i-video' : 'i-audio'} />
+      <p>This {kind} format can’t be played in your browser. Download it to play in another app.</p>
+      <a className="btn btn-primary" href={url} download style={{ marginTop: 12 }}>
+        <Icon id="i-download" /> Download
+      </a>
     </div>
   );
 }

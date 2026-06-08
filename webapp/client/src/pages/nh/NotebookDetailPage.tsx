@@ -10,7 +10,12 @@ import GenerateDrawer, { type DrawerSource } from '../../components/GenerateDraw
 import ItemModal from '../../components/ItemModal';
 import { TYPE, TYPES, type TypeKey } from '../../lib/registry';
 import { apiGet, apiJson, apiFormData, apiDelete } from '../../lib/api';
-import { listItems, type Item } from '../../lib/artifacts';
+import {
+  listItems,
+  getNotebookTags,
+  setNotebookTags,
+  type Item,
+} from '../../lib/artifacts';
 import { toast } from '../../lib/toast';
 
 interface SourceInfo {
@@ -105,6 +110,7 @@ export default function NotebookDetailPage() {
         <p className="view-sub">
           {sources.length} sources · {artifacts.length} artifacts. Linked to Google NotebookLM.
         </p>
+        <NotebookTagBar notebookId={id} notebookTitle={detail?.title} />
       </div>
 
       <div className="tabbar">
@@ -134,6 +140,103 @@ export default function NotebookDetailPage() {
         <SourcesTab notebookId={id} sources={sources} onChanged={reload} />
       )}
       {tab === 'chat' && <ChatTab notebookId={id} sourceCount={sources.length} />}
+    </div>
+  );
+}
+
+/* ──────────────────────────── Notebook tag bar ─────────────────────────── */
+
+/**
+ * Library-side tags for the notebook. We can't touch the notebook's name or
+ * artifacts (those mirror Google NotebookLM), but tagging it here propagates
+ * the tags onto every saved artifact of this notebook — and artifacts saved
+ * later inherit them.
+ */
+function NotebookTagBar({
+  notebookId,
+  notebookTitle,
+}: {
+  notebookId: string;
+  notebookTitle?: string;
+}) {
+  const [tags, setTags] = useState<string[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void getNotebookTags(notebookId).then((t) => live && setTags(t));
+    return () => {
+      live = false;
+    };
+  }, [notebookId]);
+
+  async function save() {
+    const next = draft
+      .split(',')
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean);
+    setBusy(true);
+    try {
+      const r = await setNotebookTags(notebookId, next, notebookTitle);
+      setTags(r.tags);
+      setEditing(false);
+      toast(
+        r.artifactsUpdated > 0
+          ? `Tags saved · ${r.artifactsUpdated} artifact${r.artifactsUpdated === 1 ? '' : 's'} updated`
+          : 'Tags saved',
+      );
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="nb-tagbar" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+        <input
+          className="input"
+          style={{ maxWidth: 360 }}
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void save();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          placeholder="tags, comma-separated"
+          disabled={busy}
+        />
+        <button className="btn btn-primary" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+        <button className="btn btn-soft" disabled={busy} onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="nb-tagbar" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+      {tags.map((t) => (
+        <span key={t} className="chip">
+          #{t}
+        </span>
+      ))}
+      <button
+        className="btn btn-soft"
+        style={{ padding: '4px 10px' }}
+        onClick={() => {
+          setDraft(tags.join(', '));
+          setEditing(true);
+        }}
+      >
+        <Icon id={tags.length ? 'i-gear' : 'i-plus'} /> {tags.length ? 'Edit tags' : 'Add tags'}
+      </button>
     </div>
   );
 }

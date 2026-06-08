@@ -10,6 +10,7 @@ import oracledb from 'oracledb';
 import type { CorpusConfig } from './config.js';
 import { withConnection } from './oci/db.js';
 import { newId } from './ulid.js';
+import { cleanTags, parseTagArray, resyncGroupTags, resyncSingleArtifact } from './tags.js';
 
 export interface CollectionSummary {
   id: string;
@@ -109,6 +110,7 @@ export async function createCollection(
   input: { name: string; description?: string; tags?: string[] },
 ): Promise<CollectionSummary> {
   const id = newId();
+  const tags = cleanTags(input.tags);
   await withConnection(cfg, async (conn) => {
     await conn.execute(
       `INSERT INTO collections (id, name, description, tags, metadata)
@@ -117,7 +119,7 @@ export async function createCollection(
         id,
         name: input.name.slice(0, 256),
         description: input.description?.slice(0, 2000) ?? null,
-        tags: JSON.stringify(input.tags ?? []),
+        tags: JSON.stringify(tags),
         metadata: JSON.stringify({}),
       },
       { autoCommit: true },
@@ -127,7 +129,7 @@ export async function createCollection(
     id,
     name: input.name,
     description: input.description ?? null,
-    tags: input.tags ?? [],
+    tags,
     itemCount: 0,
     breakdown: {},
     createdAt: new Date().toISOString(),
@@ -213,9 +215,12 @@ export async function updateCollection(
     sets.push('description = :description');
     binds['description'] = patch.description.slice(0, 2000);
   }
-  if (Array.isArray(patch.tags)) {
+  // When tags change, propagate them onto the collection's artifacts in the
+  // same transaction so the group and its items never drift out of sync.
+  const newTags = Array.isArray(patch.tags) ? cleanTags(patch.tags) : null;
+  if (newTags) {
     sets.push('tags = :tags');
-    binds['tags'] = JSON.stringify(patch.tags.map((t) => String(t)));
+    binds['tags'] = JSON.stringify(newTags);
   }
   if (sets.length === 0) return true;
   sets.push('updated_at = SYSTIMESTAMP');
@@ -224,9 +229,15 @@ export async function updateCollection(
     const r = await conn.execute(
       `UPDATE collections SET ${sets.join(', ')} WHERE id = :id`,
       binds as oracledb.BindParameters,
-      { autoCommit: true },
+      { autoCommit: false },
     );
-    return (r.rowsAffected ?? 0) > 0;
+    if ((r.rowsAffected ?? 0) === 0) {
+      await conn.rollback();
+      return false;
+    }
+    if (newTags) await resyncGroupTags(conn, 'collection_id', id, newTags);
+    await conn.commit();
+    return true;
   });
 }
 
@@ -242,7 +253,11 @@ export async function deleteCollection(cfg: CorpusConfig, id: string): Promise<b
   });
 }
 
-/** Assign (or clear, with null) an artifact's collection. */
+/**
+ * Assign (or clear, with null) an artifact's collection. The artifact re-inherits
+ * the new collection's tags (its previously-inherited slice is swapped out);
+ * clearing strips the inherited tags but keeps the artifact's manual ones.
+ */
 export async function setArtifactCollection(
   cfg: CorpusConfig,
   artifactId: string,
@@ -252,8 +267,25 @@ export async function setArtifactCollection(
     const r = await conn.execute(
       `UPDATE artifacts SET collection_id = :cid, updated_at = SYSTIMESTAMP WHERE id = :id`,
       { cid: collectionId, id: artifactId },
-      { autoCommit: true },
+      { autoCommit: false },
     );
-    return (r.rowsAffected ?? 0) > 0;
+    if ((r.rowsAffected ?? 0) === 0) {
+      await conn.rollback();
+      return false;
+    }
+    let newTags: string[] = [];
+    if (collectionId) {
+      const c = await conn.execute<{ TAGS: unknown }>(
+        `SELECT tags FROM collections WHERE id = :id`,
+        { id: collectionId },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      newTags = cleanTags(parseTagArray(c.rows?.[0]?.TAGS));
+    }
+    // Re-merge just the moved artifact: layer the target collection's tags on
+    // (or, when cleared, strip the inherited slice) without touching siblings.
+    await resyncSingleArtifact(conn, artifactId, newTags);
+    await conn.commit();
+    return true;
   });
 }

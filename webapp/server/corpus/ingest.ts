@@ -19,6 +19,7 @@ import { embedTexts } from './oci/genai.js';
 import { extract } from './extract/index.js';
 import { chunkText } from './chunk.js';
 import { newId } from './ulid.js';
+import { cleanTags, inheritedTagsForIngest } from './tags.js';
 
 /** Allowed kinds — matches schema.sql's implicit contract. */
 export type ArtifactKind =
@@ -244,6 +245,17 @@ export async function ingestArtifactWith(
     const isAudioVideo = input.kind === 'audio' || input.kind === 'video';
     const initialTrxStatus = isAudioVideo ? 'pending' : null;
 
+    // Inherit the owning group's tags (collection takes precedence over
+    // notebook). The inherited slice is recorded in metadata.inheritedTags so a
+    // later group-tag edit can swap it without disturbing manual tags.
+    const inherited = await inheritedTagsForIngest(conn, {
+      collectionId: input.collectionId,
+      notebookId: input.notebookId,
+    });
+    const finalTags = cleanTags([...(input.tags ?? []), ...inherited]);
+    const finalMeta: Record<string, unknown> = { ...(input.metadata ?? {}) };
+    if (inherited.length > 0) finalMeta['inheritedTags'] = inherited;
+
     await conn.execute(
       `INSERT INTO artifacts
          (id, kind, origin, title, notebook_id, artifact_id, collection_id,
@@ -265,8 +277,8 @@ export async function ingestArtifactWith(
         a_obj: objectName,
         a_mime: input.mimeType ?? null,
         a_sz: input.buffer.length,
-        a_tags: JSON.stringify(input.tags ?? []),
-        a_meta: JSON.stringify(input.metadata ?? {}),
+        a_tags: JSON.stringify(finalTags),
+        a_meta: JSON.stringify(finalMeta),
         a_trx: initialTrxStatus,
       },
       { autoCommit: false },
@@ -529,6 +541,15 @@ export async function saveChatArtifact(
 
   // 5) DB transaction: upsert artifact row + replace chunks.
   await withConnection(cfg, async (conn) => {
+    // New chats inherit the notebook's tags (alongside the 'chat' tag); the
+    // inherited slice is tracked so notebook re-tagging stays clean.
+    const inherited = existing
+      ? []
+      : await inheritedTagsForIngest(conn, { notebookId: input.notebookId });
+    const chatTags = cleanTags(['chat', ...inherited]);
+    const chatMeta: Record<string, unknown> = { ...metadata };
+    if (inherited.length > 0) chatMeta['inheritedTags'] = inherited;
+
     if (existing) {
       await conn.execute(
         `UPDATE artifacts
@@ -567,8 +588,8 @@ export async function saveChatArtifact(
           a_obj: objectName,
           a_mime: chatMime,
           a_sz: buffer.length,
-          a_tags: JSON.stringify(['chat']),
-          a_meta: JSON.stringify(metadata),
+          a_tags: JSON.stringify(chatTags),
+          a_meta: JSON.stringify(chatMeta),
         },
         { autoCommit: false },
       );

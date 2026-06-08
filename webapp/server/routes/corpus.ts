@@ -52,6 +52,7 @@ import {
   updateCollection,
   deleteCollection,
 } from '../corpus/collections.js';
+import { getNotebookTags, setNotebookTags } from '../corpus/notebooks.js';
 import {
   getIndexStatus,
   listUnchunked,
@@ -378,6 +379,60 @@ corpusRouter.delete(
       return;
     }
     res.json({ ok: true });
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────── notebooks ──
+//
+// A notebook's name + artifacts mirror Google NotebookLM and aren't ours to
+// mutate, but its library-side tags are. Tagging a notebook propagates the tags
+// onto every saved artifact of that notebook (and is inherited by ones saved
+// later) — symmetric with collection tags.
+
+/** GET /api/corpus/notebooks/:id/tags — the notebook's tags (empty if untagged). */
+corpusRouter.get(
+  '/notebooks/:id/tags',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({ error: 'notebook id is required' });
+      return;
+    }
+    res.json(await getNotebookTags(cfg, id));
+  }),
+);
+
+/**
+ * PATCH /api/corpus/notebooks/:id/tags — set { tags, title? }.
+ * Upserts the notebook row and re-syncs its artifacts in one transaction.
+ */
+corpusRouter.patch(
+  '/notebooks/:id/tags',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({ error: 'notebook id is required' });
+      return;
+    }
+    const body = (req.body ?? {}) as { tags?: unknown; title?: unknown };
+    if (!Array.isArray(body.tags)) {
+      res.status(400).json({ error: 'tags must be an array' });
+      return;
+    }
+    const tags = body.tags.filter((t): t is string => typeof t === 'string');
+    const title = typeof body.title === 'string' ? body.title : undefined;
+    const result = await setNotebookTags(cfg, id, tags, title);
+    res.json({ ok: true, id, ...result });
   }),
 );
 
@@ -716,6 +771,24 @@ function inferMimeType(objectName: string): string | null {
     webp: 'image/webp',
     svg: 'image/svg+xml',
     bmp: 'image/bmp',
+    // Audio
+    mp3: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    aac: 'audio/aac',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    oga: 'audio/ogg',
+    opus: 'audio/opus',
+    flac: 'audio/flac',
+    weba: 'audio/webm',
+    // Video (NotebookLM generates mp4; others play if the browser supports them)
+    mp4: 'video/mp4',
+    m4v: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    ogv: 'video/ogg',
+    mkv: 'video/x-matroska',
+    avi: 'video/x-msvideo',
   };
   return ext ? (map[ext] ?? null) : null;
 }
@@ -1087,6 +1160,18 @@ corpusRouter.get(
 
     if (mimeType && mimeType.startsWith('image/')) {
       res.json({ type: 'image', ...base });
+      return;
+    }
+
+    // Audio/video stream straight to the browser's native player. Whether a
+    // given codec plays depends on the user's browser/OS; the client shows a
+    // download fallback when the media element can't decode it.
+    if (mimeType && mimeType.startsWith('audio/')) {
+      res.json({ type: 'audio', ...base });
+      return;
+    }
+    if (mimeType && mimeType.startsWith('video/')) {
+      res.json({ type: 'video', ...base });
       return;
     }
 
