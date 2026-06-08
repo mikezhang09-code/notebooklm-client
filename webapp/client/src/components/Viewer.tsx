@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import MindmapView from './MindmapView';
+import { MarkdownView, sanitizeHtml } from '../lib/markdown';
 import { getView, type ViewPayload } from '../lib/artifacts';
 
 interface Heading {
@@ -59,9 +60,9 @@ export default function Viewer({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // After HTML content renders, extract headings → outline (and tag them with ids).
+  // After HTML/Markdown content renders, extract headings → outline (and tag them with ids).
   useEffect(() => {
-    if (view?.type !== 'html' || !bodyRef.current) {
+    if ((view?.type !== 'html' && view?.type !== 'markdown') || !bodyRef.current) {
       setHeadings([]);
       return;
     }
@@ -84,7 +85,8 @@ export default function Viewer({
     });
   }
 
-  const hasOutline = view?.type === 'html' && headings.length > 0;
+  const hasOutline =
+    (view?.type === 'html' || view?.type === 'markdown') && headings.length > 0;
   // Indent nested headings relative to the document's shallowest level.
   const minLevel = headings.length ? Math.min(...headings.map((h) => h.level)) : 1;
 
@@ -207,11 +209,17 @@ export default function Viewer({
               </div>
             )}
             {view?.type === 'html' && (
-              <div
+              <MarkdownView
                 ref={bodyRef}
-                className="md-body"
+                html={sanitizeHtml(view.content)}
                 style={{ padding: '32px 44px', maxWidth: 860, margin: '0 auto' }}
-                dangerouslySetInnerHTML={{ __html: view.content }}
+              />
+            )}
+            {view?.type === 'markdown' && (
+              <MarkdownView
+                ref={bodyRef}
+                source={view.content}
+                style={{ padding: '32px 44px', maxWidth: 860, margin: '0 auto' }}
               />
             )}
             {view?.type === 'text' && (

@@ -2961,6 +2961,135 @@ body[data-theme='dark'] .pick-tile .g-ic {
   margin: 1.7em 0;
 }
 
+/* GFM task lists (rendered by marked as <li> with a leading checkbox). */
+.md-body li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.3em;
+}
+.md-body li > input[type='checkbox'] {
+  margin-right: 0.5em;
+  accent-color: var(--accent);
+}
+
+/* Mermaid diagrams (markdown-enhance.ts swaps the code block for inline SVG). */
+.md-body .mermaid-diagram {
+  margin: 0 0 1.2em;
+  text-align: center;
+  overflow-x: auto;
+}
+.md-body .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.md-body .mermaid-error {
+  margin: 0 0 0.4em;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.85em;
+}
+
+/* Display math gets its own centred line. */
+.md-body .katex-block {
+  margin: 0 0 1em;
+  text-align: center;
+  overflow-x: auto;
+}
+
+/* highlight.js tokens, themed to the app palette so they flip with dark mode. */
+.md-body .hljs-comment,
+.md-body .hljs-quote {
+  color: var(--muted);
+  font-style: italic;
+}
+.md-body .hljs-keyword,
+.md-body .hljs-selector-tag,
+.md-body .hljs-built_in,
+.md-body .hljs-literal {
+  color: var(--accent);
+}
+.md-body .hljs-string,
+.md-body .hljs-attr,
+.md-body .hljs-template-tag,
+.md-body .hljs-addition {
+  color: #4a8a5c;
+}
+.md-body .hljs-number,
+.md-body .hljs-symbol,
+.md-body .hljs-meta {
+  color: #b07a2c;
+}
+.md-body .hljs-title,
+.md-body .hljs-section,
+.md-body .hljs-name,
+.md-body .hljs-type {
+  color: #3a73b8;
+  font-weight: 600;
+}
+.md-body .hljs-variable,
+.md-body .hljs-attribute,
+.md-body .hljs-tag {
+  color: var(--ink-soft);
+}
+.md-body .hljs-deletion {
+  color: var(--accent-2);
+}
+
+/* Markdown editor formatting toolbar + status bar. */
+.md-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+.md-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.md-toolbar button:hover {
+  background: var(--card-2);
+  color: var(--ink);
+}
+.md-toolbar button svg {
+  width: 17px;
+  height: 17px;
+}
+.md-tool-bold {
+  font-weight: 800;
+}
+.md-tool-italic {
+  font-style: italic;
+  font-weight: 600;
+}
+.md-statusbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.md-dirty {
+  color: var(--accent);
+}
+
 /* Interactive mind-map diagram ({name, children}) — see MindmapView.tsx. */
 .mindmap-canvas {
   position: relative;

@@ -137,6 +137,7 @@ export type ViewPayload =
   | { type: 'office'; officeViewerUrl: string; downloadUrl: string; mimeType?: string }
   | { type: 'image'; downloadUrl: string; mimeType?: string }
   | { type: 'html'; content: string; downloadUrl: string; mimeType?: string }
+  | { type: 'markdown'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'text'; content: string; downloadUrl: string; mimeType?: string }
   | { type: 'mindmap'; tree: MindNode; downloadUrl: string; mimeType?: string }
   | { type: 'unsupported'; downloadUrl: string; mimeType?: string };

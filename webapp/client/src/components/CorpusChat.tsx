@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import Viewer from './Viewer';
-import { renderAnswer } from '../lib/answer';
+import { MarkdownView, renderAnswer } from '../lib/markdown';
 import {
   corpusChatStream,
   getChatPersist,
@@ -361,10 +361,10 @@ export default function CorpusChat({
                         </div>
                       )}
                       {m.text ? (
-                        <div
-                          className="md-body bubble-md"
+                        <MarkdownView
+                          className="bubble-md"
                           onClick={(e) => onThreadClick(e, m.sources)}
-                          dangerouslySetInnerHTML={{ __html: renderAnswer(m.text) }}
+                          html={renderAnswer(m.text)}
                         />
                       ) : (
                         <span className="typing">

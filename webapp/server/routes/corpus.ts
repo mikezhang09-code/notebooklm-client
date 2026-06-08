@@ -16,7 +16,6 @@ import { readFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import oracledb from 'oracledb';
 import mammoth from 'mammoth';
-import { marked } from 'marked';
 import { asyncHandler } from '../lib/handler.js';
 import { getJob } from '../lib/job-store.js';
 import {
@@ -951,7 +950,8 @@ function anyJsonToHtml(parsed: unknown): string | null {
  *
  *   type="pdf"         → downloadUrl is a PAR; client embeds in <iframe>
  *   type="office"      → officeViewerUrl is an MS Office Online embed URL
- *   type="html"        → content is rendered HTML (DOCX via mammoth, MD via marked)
+ *   type="html"        → content is rendered HTML (DOCX via mammoth, CSV/JSON tables)
+ *   type="markdown"    → content is raw Markdown; client renders it
  *   type="text"        → content is raw UTF-8 text
  *   type="unsupported" → preview not available; downloadUrl always present as fallback
  */
@@ -1032,10 +1032,11 @@ corpusRouter.get(
     }
 
     if (mimeType === 'text/markdown' || mimeType === 'text/x-markdown') {
+      // Return raw Markdown; the client renders it so it can run Mermaid /
+      // highlighting / math passes that must execute in the browser.
       const buffer = await getObjectBuffer(cfg, objectName);
       const text = buffer.toString('utf8');
-      const html = String(await Promise.resolve(marked.parse(text)));
-      res.json({ type: 'html', content: html, ...base });
+      res.json({ type: 'markdown', content: text, ...base });
       return;
     }
 
