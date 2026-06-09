@@ -73,7 +73,7 @@ async function highlightCode(el: HTMLElement, isCancelled: CancelFn): Promise<vo
   );
   if (blocks.length === 0) return;
 
-  const hljs = (await import('highlight.js/lib/common')).default;
+  const hljs = (await import('highlight.js')).default;
   if (isCancelled()) return;
 
   for (const block of blocks) {

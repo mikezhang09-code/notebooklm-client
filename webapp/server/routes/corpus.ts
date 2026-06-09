@@ -760,6 +760,12 @@ function inferMimeType(objectName: string): string | null {
     md: 'text/markdown',
     markdown: 'text/markdown',
     txt: 'text/plain',
+    js: 'text/javascript',
+    jsx: 'text/jsx',
+    mjs: 'text/javascript',
+    cjs: 'text/javascript',
+    ts: 'text/typescript',
+    tsx: 'text/tsx',
     csv: 'text/csv',
     json: 'application/json',
     html: 'text/html',
@@ -791,6 +797,35 @@ function inferMimeType(objectName: string): string | null {
     avi: 'video/x-msvideo',
   };
   return ext ? (map[ext] ?? null) : null;
+}
+
+function reactLanguageForMime(mimeType: string | null, objectName: string): string | null {
+  const mime = (mimeType ?? '').toLowerCase();
+  const ext = objectName.split('.').pop()?.toLowerCase() ?? '';
+  if (mime === 'text/jsx' || ext === 'jsx') return 'jsx';
+  if (mime === 'text/tsx' || ext === 'tsx') return 'tsx';
+  return null;
+}
+
+function codeLanguageForMime(mimeType: string | null, objectName: string): string | null {
+  const mime = (mimeType ?? '').toLowerCase();
+  const ext = objectName.split('.').pop()?.toLowerCase() ?? '';
+  if (
+    mime === 'text/typescript' ||
+    mime === 'application/typescript' ||
+    ext === 'ts'
+  ) {
+    return 'typescript';
+  }
+  if (
+    mime === 'text/javascript' ||
+    mime === 'application/javascript' ||
+    mime === 'application/x-javascript' ||
+    ['js', 'mjs', 'cjs'].includes(ext)
+  ) {
+    return 'javascript';
+  }
+  return null;
 }
 
 // ── Table viewer helpers (JSON + CSV) ────────────────────────────────────────
@@ -1110,6 +1145,22 @@ corpusRouter.get(
       const buffer = await getObjectBuffer(cfg, objectName);
       const text = buffer.toString('utf8');
       res.json({ type: 'markdown', content: text, ...base });
+      return;
+    }
+
+    const reactLanguage = reactLanguageForMime(mimeType, objectName);
+    if (reactLanguage) {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = buffer.slice(0, 1024 * 1024).toString('utf8');
+      res.json({ type: 'react', language: reactLanguage, content: text, ...base });
+      return;
+    }
+
+    const codeLanguage = codeLanguageForMime(mimeType, objectName);
+    if (codeLanguage) {
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = buffer.slice(0, 1024 * 1024).toString('utf8');
+      res.json({ type: 'code', language: codeLanguage, content: text, ...base });
       return;
     }
 
@@ -2087,6 +2138,12 @@ corpusRouter.post(
       wav: 'audio/wav',
       ogg: 'audio/ogg',
       md: 'text/markdown; charset=utf-8',
+      js: 'text/javascript; charset=utf-8',
+      jsx: 'text/jsx; charset=utf-8',
+      mjs: 'text/javascript; charset=utf-8',
+      cjs: 'text/javascript; charset=utf-8',
+      ts: 'text/typescript; charset=utf-8',
+      tsx: 'text/tsx; charset=utf-8',
       html: 'text/html',
       png: 'image/png',
       jpg: 'image/jpeg',

@@ -22,6 +22,7 @@
     "express": "^4.21.1",
     "highlight.js": "^11.11.1",
     "katex": "^0.17.0",
+    "lucide-react": "^1.17.0",
     "mammoth": "^1.12.0",
     "marked": "^14.0.0",
     "mermaid": "^11.15.0",
@@ -33,6 +34,7 @@
     "oci-objectstorage": "^2.131.0",
     "oracledb": "^6.10.0",
     "pdf-parse": "^1.1.4",
+    "recharts": "^3.8.1",
     "ulid": "^2.4.0"
   },
   "devDependencies": {

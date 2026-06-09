@@ -3037,6 +3037,97 @@ body[data-theme='dark'] .pick-tile .g-ic {
   color: var(--accent-2);
 }
 
+.react-artifact-view {
+  min-height: 100%;
+  padding: 24px 28px;
+  background: var(--bg);
+}
+.react-artifact-frame {
+  display: block;
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+.react-artifact-error {
+  display: grid;
+  gap: 4px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+.react-artifact-error b {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.react-artifact-error span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Read-only source-code previews in the artifact viewer. */
+.code-view {
+  min-height: 100%;
+  padding: 24px 28px;
+}
+.code-view pre {
+  margin: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: auto;
+  box-shadow: var(--shadow);
+}
+.code-view code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  tab-size: 2;
+}
+.code-view .hljs-comment,
+.code-view .hljs-quote {
+  color: var(--muted);
+  font-style: italic;
+}
+.code-view .hljs-keyword,
+.code-view .hljs-selector-tag,
+.code-view .hljs-built_in,
+.code-view .hljs-literal {
+  color: var(--accent);
+}
+.code-view .hljs-string,
+.code-view .hljs-attr,
+.code-view .hljs-template-tag,
+.code-view .hljs-addition {
+  color: #4a8a5c;
+}
+.code-view .hljs-number,
+.code-view .hljs-symbol,
+.code-view .hljs-meta {
+  color: #b07a2c;
+}
+.code-view .hljs-title,
+.code-view .hljs-section,
+.code-view .hljs-name,
+.code-view .hljs-type {
+  color: #3a73b8;
+  font-weight: 600;
+}
+.code-view .hljs-variable,
+.code-view .hljs-attribute,
+.code-view .hljs-tag {
+  color: var(--ink-soft);
+}
+.code-view .hljs-deletion {
+  color: var(--accent-2);
+}
+
 /* Markdown editor formatting toolbar + status bar. */
 .md-toolbar {
   display: flex;

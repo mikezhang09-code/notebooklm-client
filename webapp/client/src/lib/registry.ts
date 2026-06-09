@@ -223,6 +223,15 @@ export function fileFace(mimeType?: string | null, title?: string): Face {
   if (m.includes('spreadsheetml') || m === 'application/vnd.ms-excel' || m === 'text/csv' || has('csv', 'xls', 'xlsx'))
     return { label: 'Spreadsheet', icon: 'i-table', color: '#8a7c4a' };
   if (m === 'application/json' || has('json')) return { label: 'JSON', icon: 'i-table', color: '#8a7c4a' };
+  if (
+    m === 'text/javascript' ||
+    m === 'application/javascript' ||
+    m === 'application/x-javascript' ||
+    m === 'text/typescript' ||
+    m === 'application/typescript' ||
+    has('js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs')
+  )
+    return { label: 'Code', icon: 'i-doc', color: '#5b6bbf' };
   if (m.startsWith('image/') || has('png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'))
     return { label: 'Image', icon: 'i-info', color: '#8a6aa8' };
   if (m.startsWith('audio/') || has('mp3', 'wav', 'm4a')) return { label: 'Audio', icon: 'i-audio', color: '#c15a37' };
