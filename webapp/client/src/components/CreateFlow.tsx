@@ -53,11 +53,14 @@ export function CreateChooser({
   typeKey,
   onUpload,
   onGenerate,
+  onWrite,
   onClose,
 }: {
   typeKey: TypeKey;
   onUpload: () => void;
   onGenerate: () => void;
+  /** Offered for hand-written types (notes): open the markdown editor. */
+  onWrite?: () => void;
   onClose: () => void;
 }) {
   const t = TYPE[typeKey];
@@ -73,13 +76,17 @@ export function CreateChooser({
             <div>
               <div className="m-type">{t.label}</div>
               <h2>Add {t.label.toLowerCase()}</h2>
-              <p className="m-desc">Upload a finished file, or generate one with AI.</p>
+              <p className="m-desc">
+                {onWrite
+                  ? 'Write one in markdown, or upload a finished file.'
+                  : 'Upload a finished file, or generate one with AI.'}
+              </p>
             </div>
             <button className="icon-btn" onClick={onClose}>
               <Icon id="i-close" />
             </button>
           </div>
-          <div className={t.generate ? 'choose2' : ''}>
+          <div className={t.generate || onWrite ? 'choose2' : ''}>
             <button className="choose-card" onClick={onUpload}>
               <span className="ch-ic">
                 <Icon id="i-upload" />
@@ -87,6 +94,15 @@ export function CreateChooser({
               <b>Upload a file</b>
               <small>Store an existing {t.label.toLowerCase()} in your library.</small>
             </button>
+            {onWrite && (
+              <button className="choose-card primary" onClick={onWrite}>
+                <span className="ch-ic">
+                  <Icon id="i-doc" />
+                </span>
+                <b>Write a {t.label.toLowerCase()}</b>
+                <small>Compose a new {t.label.toLowerCase()} in the markdown editor.</small>
+              </button>
+            )}
             {t.generate && (
               <button className="choose-card primary" onClick={onGenerate}>
                 <span className="ch-ic">

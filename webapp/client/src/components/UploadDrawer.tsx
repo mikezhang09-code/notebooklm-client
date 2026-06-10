@@ -39,10 +39,12 @@ export default function UploadDrawer({
 
   function addFiles(list: FileList | null) {
     if (!list || list.length === 0) return;
+    // Notes have no detectable MIME type — detection would file a .md/.txt
+    // under Reports, so uploads launched from the Notes section default there.
     const added: PendingFile[] = Array.from(list).map((file) => ({
       file,
       name: file.name.replace(/\.[^.]+$/, ''),
-      kind: detectIngestKind(file.type, file.name),
+      kind: typeKey === 'note' ? TYPE.note.ingestKind : detectIngestKind(file.type, file.name),
       status: 'pending',
     }));
     setFiles((prev) => [...prev, ...added]);

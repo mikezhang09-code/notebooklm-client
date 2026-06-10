@@ -159,8 +159,7 @@ export default function FreeFormsOverviewPage() {
           onClose={() => setPicking(false)}
           onPick={(key) => {
             setPicking(false);
-            if (key === 'note') setNoteEditing(true);
-            else setChooseType(key);
+            setChooseType(key);
           }}
         />
       )}
@@ -176,6 +175,14 @@ export default function FreeFormsOverviewPage() {
             setGenType(chooseType);
             setChooseType(null);
           }}
+          onWrite={
+            chooseType === 'note'
+              ? () => {
+                  setChooseType(null);
+                  setNoteEditing(true);
+                }
+              : undefined
+          }
         />
       )}
       {uploadType && (

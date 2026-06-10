@@ -109,10 +109,7 @@ export default function FreeFormTypePage() {
               <h1>{t.plural}</h1>
             </div>
           </div>
-          <button
-            className="btn btn-primary"
-            onClick={() => (typeKey === 'note' ? setNoteEditing(true) : setChoosing(true))}
-          >
+          <button className="btn btn-primary" onClick={() => setChoosing(true)}>
             <Icon id="i-plus" />
             New {t.label.toLowerCase()}
           </button>
@@ -256,6 +253,14 @@ export default function FreeFormTypePage() {
             setChoosing(false);
             setGenerating(true);
           }}
+          onWrite={
+            typeKey === 'note'
+              ? () => {
+                  setChoosing(false);
+                  setNoteEditing(true);
+                }
+              : undefined
+          }
         />
       )}
       {uploading && (
