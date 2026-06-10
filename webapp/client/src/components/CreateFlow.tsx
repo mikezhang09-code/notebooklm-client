@@ -79,7 +79,9 @@ export function CreateChooser({
               <p className="m-desc">
                 {onWrite
                   ? 'Write one in markdown, or upload a finished file.'
-                  : 'Upload a finished file, or generate one with AI.'}
+                  : t.generate
+                    ? 'Upload a finished file, or generate one with AI.'
+                    : 'Upload a finished file to store it in your library.'}
               </p>
             </div>
             <button className="icon-btn" onClick={onClose}>

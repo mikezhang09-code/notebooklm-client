@@ -56,9 +56,13 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return unwrap<T>(res);
 }
 
-export async function apiFormData<T>(path: string, form: FormData): Promise<T> {
+export async function apiFormData<T>(
+  path: string,
+  form: FormData,
+  method: 'POST' | 'PUT' = 'POST',
+): Promise<T> {
   const res = await fetch(path, {
-    method: 'POST',
+    method,
     headers: buildHeaders(), // let browser set multipart boundary
     body: form,
   });

@@ -8,6 +8,7 @@
 export type TypeKey =
   | 'audio'
   | 'report'
+  | 'doc'
   | 'video'
   | 'quiz'
   | 'flash'
@@ -35,6 +36,9 @@ export interface ArtifactType {
 export const TYPES: ArtifactType[] = [
   { key: 'audio', label: 'Audio', plural: 'Audio', icon: 'i-audio', color: '#c15a37', generate: true, backendKind: 'audio', ingestKind: 'audio' },
   { key: 'report', label: 'Report', plural: 'Reports', icon: 'i-report', color: '#4a76a8', generate: true, backendKind: 'report', ingestKind: 'report' },
+  // Document: Word files (.docx/.doc) — uploaded, then editable in-app.
+  // Distinct from Notes (markdown written in-app) and Reports (read-only refs).
+  { key: 'doc', label: 'Document', plural: 'Documents', icon: 'i-doc', color: '#536b8a', generate: false, backendKind: null, ingestKind: 'doc', isNew: true },
   { key: 'video', label: 'Video', plural: 'Videos', icon: 'i-video', color: '#8a6aa8', generate: true, backendKind: 'video', ingestKind: 'video' },
   { key: 'quiz', label: 'Quiz', plural: 'Quizzes', icon: 'i-quiz', color: '#b9892a', generate: true, backendKind: 'quiz', ingestKind: 'quiz' },
   { key: 'flash', label: 'Flashcards', plural: 'Flashcards', icon: 'i-flash', color: '#5f8a5a', generate: true, backendKind: 'flashcards', ingestKind: 'flashcards' },
@@ -172,6 +176,8 @@ export const GEN_SPEC: Record<TypeKey, GenSpec> = {
     instructions: true,
     language: true,
   },
+  // Documents are uploaded Word files edited in-app — no generate spec.
+  doc: { fields: [], instructions: false, language: false },
   // Notes are hand-written, not generated — no generate spec.
   note: { fields: [], instructions: false, language: false },
 };
@@ -192,6 +198,7 @@ export interface Face {
 const KIND_TO_KEY: Record<string, TypeKey> = {
   audio: 'audio',
   report: 'report',
+  doc: 'doc',
   video: 'video',
   quiz: 'quiz',
   flashcards: 'flash',
@@ -267,10 +274,10 @@ export const UPLOAD_KIND_OPTIONS: { value: string; label: string }[] = [
 ];
 
 /**
- * Bucket any artifact into one of the 9 output-type keys for Free Forms
+ * Bucket any artifact into one of the output-type keys for Free Forms
  * grouping. Real kinds map directly; uploads map to the nearest output type by
- * file type (e.g. a CSV upload → data table, an mp3 upload → audio, documents
- * → report). Keeps uploaded + generated artifacts in the same type sections.
+ * file type (e.g. a CSV upload → data table, an mp3 upload → audio, a Word
+ * file → document). Keeps uploaded + generated artifacts in the same sections.
  */
 export function typeKeyFor(kind: string, mimeType?: string | null, title?: string): TypeKey {
   if (kind !== 'upload') return KIND_TO_KEY[kind] ?? 'report';
@@ -285,7 +292,9 @@ export function typeKeyFor(kind: string, mimeType?: string | null, title?: strin
       return 'video';
     case 'Image':
       return 'info';
+    case 'Document':
+      return 'doc'; // Word files — editable in-app
     default:
-      return 'report'; // Web page, Markdown, PDF, Document, Text, JSON, File
+      return 'report'; // Web page, Markdown, PDF, Text, JSON, File
   }
 }

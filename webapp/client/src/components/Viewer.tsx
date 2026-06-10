@@ -6,12 +6,16 @@
  * download fallback for unsupported types.
  */
 import * as React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import * as ReactDOMClient from 'react-dom/client';
 import { Icon } from './Icon';
 import MindmapView from './MindmapView';
 import { MarkdownView, sanitizeHtml } from '../lib/markdown';
-import { getView, type ViewPayload } from '../lib/artifacts';
+import { getView, DOCX_MIME, type ViewPayload } from '../lib/artifacts';
+
+// The Word editor pulls in ProseMirror + the OOXML engine — keep it out of
+// the main bundle and load it only when the user clicks Edit.
+const DocxEditorPane = React.lazy(() => import('./DocxEditorPane'));
 
 interface Heading {
   id: string;
@@ -44,9 +48,17 @@ export default function Viewer({
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  // Word artifacts can flip between the rendered preview and the live editor.
+  const [editingDocx, setEditingDocx] = useState(false);
   // Set when an <audio>/<video> element can't decode the file (unsupported codec).
   const [mediaError, setMediaError] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  function loadView() {
+    getView(id)
+      .then((v) => setView(v))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -89,8 +101,9 @@ export default function Viewer({
     });
   }
 
+  const isDocx = view?.mimeType === DOCX_MIME;
   const hasOutline =
-    (view?.type === 'html' || view?.type === 'markdown') && headings.length > 0;
+    !editingDocx && (view?.type === 'html' || view?.type === 'markdown') && headings.length > 0;
   // Indent nested headings relative to the document's shallowest level.
   const minLevel = headings.length ? Math.min(...headings.map((h) => h.level)) : 1;
 
@@ -137,6 +150,15 @@ export default function Viewer({
           >
             {title}
           </b>
+          {isDocx && (
+            <button
+              className="btn btn-soft"
+              title={editingDocx ? 'Back to the read-only preview' : 'Edit this Word document'}
+              onClick={() => setEditingDocx((e) => !e)}
+            >
+              <Icon id="i-doc" /> {editingDocx ? 'Preview' : 'Edit'}
+            </button>
+          )}
           {hasOutline && (
             <button
               className="icon-btn"
@@ -188,7 +210,7 @@ export default function Viewer({
             style={{
               flex: 1,
               minWidth: 0,
-              overflow: view?.type === 'mindmap' ? 'hidden' : 'auto',
+              overflow: view?.type === 'mindmap' || editingDocx ? 'hidden' : 'auto',
               background: 'var(--card-2)',
             }}
           >
@@ -238,7 +260,12 @@ export default function Viewer({
                   />
                 </div>
               ))}
-            {view?.type === 'html' && (
+            {isDocx && editingDocx && (
+              <Suspense fallback={<div className="empty">Loading editor…</div>}>
+                <DocxEditorPane id={id} title={title} onSaved={loadView} />
+              </Suspense>
+            )}
+            {view?.type === 'html' && !editingDocx && (
               <MarkdownView
                 ref={bodyRef}
                 html={sanitizeHtml(view.content)}

@@ -41,6 +41,7 @@ import {
   ingestArtifact,
   saveChatArtifact,
   updateArtifactText,
+  updateArtifactBinary,
   type ArtifactKind,
   type ArtifactOrigin,
   type SavedChatTurn,
@@ -74,6 +75,7 @@ const upload = multer({
 const ALLOWED_KINDS: ArtifactKind[] = [
   'audio',
   'report',
+  'doc',
   'video',
   'quiz',
   'flashcards',
@@ -183,7 +185,7 @@ corpusRouter.get(
  * Fields:
  *   file      (required)  the blob to store + index
  *   title     (required)  display name
- *   kind      (required)  audio|report|video|quiz|flashcards|infographic|slides|data_table|upload
+ *   kind      (required)  one of ALLOWED_KINDS (audio|report|doc|video|quiz|flashcards|infographic|slides|data_table|mind|upload|note|qa)
  *   origin    (optional)  notebooklm|upload (default: upload)
  *   notebookId, artifactId  (optional) NotebookLM linkage
  *   tags      (optional)  JSON array string, e.g. ["q2-earnings","tencent"]
@@ -1262,6 +1264,94 @@ corpusRouter.get(
     }
     const buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
     res.json({ content: buffer.toString('utf8'), mimeType: row.MIME_TYPE ?? null });
+  }),
+);
+
+/**
+ * GET /api/corpus/artifacts/:id/file — stream the raw blob bytes same-origin.
+ *
+ * The PAR download URL points at OCI Object Storage, which sends no CORS
+ * headers — fine for <iframe>/<img>/<audio> embeds, but a browser fetch()
+ * for an ArrayBuffer (e.g. loading a DOCX into the in-app editor) is
+ * blocked. This route proxies the bytes through the API origin instead.
+ */
+corpusRouter.get(
+  '/artifacts/:id/file',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const row = await withConnection(cfg, async (conn) => {
+      const r = await conn.execute<{ OBJECT_NAME: string; MIME_TYPE: string | null }>(
+        `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+        { id },
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      return r.rows?.[0];
+    });
+    if (!row) {
+      res.status(404).json({ error: 'artifact not found' });
+      return;
+    }
+    const buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
+    const mime =
+      row.MIME_TYPE?.split(';')[0]?.trim() ||
+      inferMimeType(row.OBJECT_NAME) ||
+      'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename*=UTF-8''${encodeURIComponent(basename(row.OBJECT_NAME))}`,
+    );
+    res.send(buffer);
+  }),
+);
+
+/**
+ * PUT /api/corpus/artifacts/:id/docx — multipart/form-data
+ *
+ * Replace a Word artifact's blob with an edited .docx (field: file) and
+ * re-index it (extract → chunk → embed). Optional `title` field renames.
+ */
+corpusRouter.put(
+  '/artifacts/:id/docx',
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const file = (req as unknown as { file?: Express.Multer.File }).file;
+    if (!file) {
+      res.status(400).json({ error: 'missing "file" field' });
+      return;
+    }
+    // Cheap sanity check: a .docx is a ZIP container (PK\x03\x04).
+    if (file.buffer.length < 4 || file.buffer.readUInt32LE(0) !== 0x04034b50) {
+      res.status(400).json({ error: 'file is not a valid .docx (ZIP) document' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, string | undefined>;
+    const result = await updateArtifactBinary(cfg, id, {
+      buffer: file.buffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      title: body['title']?.trim() || undefined,
+    });
+    res.json(result);
   }),
 );
 

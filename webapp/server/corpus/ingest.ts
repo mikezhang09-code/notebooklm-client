@@ -25,6 +25,7 @@ import { cleanTags, inheritedTagsForIngest } from './tags.js';
 export type ArtifactKind =
   | 'audio'
   | 'report'
+  | 'doc'
   | 'video'
   | 'quiz'
   | 'flashcards'
@@ -681,6 +682,93 @@ export async function updateArtifactText(
           SET title = COALESCE(:t, title), size_bytes = :sz, updated_at = SYSTIMESTAMP
         WHERE id = :id`,
       { t: input.title?.slice(0, 512) ?? null, sz: buffer.length, id },
+      { autoCommit: false },
+    );
+    await conn.execute(`DELETE FROM artifact_chunks WHERE artifact_id = :aid`, { aid: id }, { autoCommit: false });
+    if (storeChunks) {
+      const rows = chunks.map((c, i) => ({
+        cid: newId(),
+        aid: id,
+        ord: c.ordinal,
+        txt: c.text,
+        cs: c.charStart,
+        ce: c.charEnd,
+        tc: c.tokenEstimate,
+        emb: Float32Array.from(vectors[i] as number[]),
+      }));
+      await conn.executeMany(
+        `INSERT INTO artifact_chunks
+           (id, artifact_id, ordinal, text, char_start, char_end, token_count, embedding)
+         VALUES (:cid, :aid, :ord, :txt, :cs, :ce, :tc, :emb)`,
+        rows as unknown as oracledb.BindParameters[],
+        {
+          bindDefs: {
+            cid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
+            aid: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 26 },
+            ord: { type: oracledb.DB_TYPE_NUMBER },
+            txt: { type: oracledb.DB_TYPE_VARCHAR, maxSize: 32000 },
+            cs: { type: oracledb.DB_TYPE_NUMBER },
+            ce: { type: oracledb.DB_TYPE_NUMBER },
+            tc: { type: oracledb.DB_TYPE_NUMBER },
+            emb: { type: oracledb.DB_TYPE_VECTOR },
+          },
+          autoCommit: false,
+        },
+      );
+    }
+    await conn.commit();
+  });
+
+  return {
+    id,
+    chunkCount: storeChunks ? chunks.length : 0,
+    ...(embed.error ? { embedSkipped: true, embedError: embed.error } : {}),
+  };
+}
+
+/**
+ * Replace a binary artifact's blob (e.g. an edited DOCX), then re-extract,
+ * re-chunk and re-embed its text. Binary sibling of `updateArtifactText` —
+ * same overwrite-in-place semantics, but content arrives as raw bytes and
+ * the text comes from the extract pipeline rather than the request body.
+ */
+export async function updateArtifactBinary(
+  cfg: CorpusConfig,
+  id: string,
+  input: { buffer: Buffer; mimeType?: string; title?: string },
+): Promise<{ id: string; chunkCount: number; embedSkipped?: boolean; embedError?: string }> {
+  const row = await withConnection(cfg, async (conn) => {
+    const r = await conn.execute<{ OBJECT_NAME: string; MIME_TYPE: string | null }>(
+      `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+      { id },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return r.rows?.[0];
+  });
+  if (!row) throw new Error('artifact not found');
+
+  const objectName = row.OBJECT_NAME;
+  const mime = input.mimeType ?? row.MIME_TYPE ?? 'application/octet-stream';
+  const text = await extract(input.buffer, mime, objectName);
+  const chunks = chunkText(text);
+
+  const [, embed] = await Promise.all([
+    putObject(cfg, objectName, input.buffer, mime, input.buffer.length),
+    safeEmbed(cfg, chunks.map((c) => c.text)),
+  ]);
+  const vectors = embed.vectors;
+  const storeChunks = !embed.error && vectors.length === chunks.length && chunks.length > 0;
+  if (embed.error) {
+    console.warn(`[corpus] embedding failed on update — keeping content without chunks: ${embed.error}`);
+  }
+
+  await withConnection(cfg, async (conn) => {
+    await conn.execute(
+      `UPDATE artifacts
+          SET title = COALESCE(:t, title), mime_type = :mt, size_bytes = :sz,
+              updated_at = SYSTIMESTAMP
+        WHERE id = :id`,
+      { t: input.title?.slice(0, 512) ?? null, mt: mime, sz: input.buffer.length, id },
       { autoCommit: false },
     );
     await conn.execute(`DELETE FROM artifact_chunks WHERE artifact_id = :aid`, { aid: id }, { autoCommit: false });

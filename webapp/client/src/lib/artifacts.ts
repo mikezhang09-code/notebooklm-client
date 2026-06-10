@@ -1,5 +1,5 @@
 /** Client for the corpus artifacts aggregation (GET /api/corpus/artifacts). */
-import { apiGet, apiJson, apiDelete, streamJsonSse } from './api';
+import { apiGet, apiJson, apiDelete, apiFormData, streamJsonSse } from './api';
 import { typeKeyFor } from './registry';
 import type { TypeKey } from './registry';
 
@@ -154,6 +154,25 @@ export function getView(id: string): Promise<ViewPayload> {
 /** Raw UTF-8 text of a text artifact (for the editor). */
 export function getRawText(id: string): Promise<{ content: string; mimeType: string | null }> {
   return apiGet(`/api/corpus/artifacts/${id}/raw`);
+}
+
+export const DOCX_MIME =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+/** Same-origin URL for an artifact's raw bytes (fetchable, unlike the OCI PAR). */
+export function artifactFileUrl(id: string): string {
+  return `/api/corpus/artifacts/${id}/file`;
+}
+
+/** Replace a Word artifact's blob with an edited .docx (re-extracts + re-embeds). */
+export function updateArtifactDocx(
+  id: string,
+  data: ArrayBuffer,
+  filename: string,
+): Promise<{ id: string; chunkCount: number; embedSkipped?: boolean }> {
+  const form = new FormData();
+  form.append('file', new Blob([data], { type: DOCX_MIME }), filename);
+  return apiFormData(`/api/corpus/artifacts/${id}/docx`, form, 'PUT');
 }
 
 /** Replace a text artifact's content (re-embeds server-side). */
