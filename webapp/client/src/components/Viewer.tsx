@@ -47,6 +47,8 @@ export default function Viewer({
   const [error, setError] = useState<string | null>(null);
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [outlineOpen, setOutlineOpen] = useState(true);
+  const [outlineQuery, setOutlineQuery] = useState('');
+  const [fontSize, setFontSize] = useState(15);
   const [expanded, setExpanded] = useState(false);
   // Word artifacts can flip between the rendered preview and the live editor.
   const [editingDocx, setEditingDocx] = useState(false);
@@ -92,6 +94,7 @@ export default function Viewer({
     });
     setHeadings(list);
     setOutlineOpen(list.length > 1);
+    setOutlineQuery('');
   }, [view]);
 
   function scrollTo(hid: string) {
@@ -102,10 +105,13 @@ export default function Viewer({
   }
 
   const isDocx = view?.mimeType === DOCX_MIME;
-  const hasOutline =
-    !editingDocx && (view?.type === 'html' || view?.type === 'markdown') && headings.length > 0;
+  const isDocView = !editingDocx && (view?.type === 'html' || view?.type === 'markdown');
+  const hasOutline = isDocView && headings.length > 0;
   // Indent nested headings relative to the document's shallowest level.
   const minLevel = headings.length ? Math.min(...headings.map((h) => h.level)) : 1;
+  const filteredHeadings = outlineQuery.trim()
+    ? headings.filter((h) => h.text.toLowerCase().includes(outlineQuery.trim().toLowerCase()))
+    : headings;
 
   return (
     <div
@@ -158,6 +164,24 @@ export default function Viewer({
             >
               <Icon id="i-doc" /> {editingDocx ? 'Preview' : 'Edit'}
             </button>
+          )}
+          {isDocView && (
+            <div className="font-step" role="group" aria-label="Text size">
+              <button
+                title="Smaller text"
+                disabled={fontSize <= 12}
+                onClick={() => setFontSize((s) => Math.max(12, s - 1))}
+              >
+                A−
+              </button>
+              <button
+                title="Larger text"
+                disabled={fontSize >= 22}
+                onClick={() => setFontSize((s) => Math.min(22, s + 1))}
+              >
+                A+
+              </button>
+            </div>
           )}
           {hasOutline && (
             <button
@@ -269,14 +293,14 @@ export default function Viewer({
               <MarkdownView
                 ref={bodyRef}
                 html={sanitizeHtml(view.content)}
-                style={{ padding: '32px 44px', maxWidth: 860, margin: '0 auto' }}
+                style={{ padding: '32px 44px', maxWidth: 860, margin: '0 auto', fontSize }}
               />
             )}
             {view?.type === 'markdown' && (
               <MarkdownView
                 ref={bodyRef}
                 source={view.content}
-                style={{ padding: '32px 44px', maxWidth: 860, margin: '0 auto' }}
+                style={{ padding: '32px 44px', maxWidth: 860, margin: '0 auto', fontSize }}
               />
             )}
             {view?.type === 'react' && (
@@ -319,7 +343,19 @@ export default function Viewer({
                   <Icon id="i-close" />
                 </button>
               </div>
-              {headings.map((h) => (
+              {headings.length >= 6 && (
+                <input
+                  className="md-outline-filter"
+                  type="search"
+                  placeholder="Filter headings…"
+                  value={outlineQuery}
+                  onChange={(e) => setOutlineQuery(e.target.value)}
+                />
+              )}
+              {filteredHeadings.length === 0 && (
+                <span className="md-outline-empty">No matching headings</span>
+              )}
+              {filteredHeadings.map((h) => (
                 <a
                   key={h.id}
                   className={`lvl-${h.level}`}

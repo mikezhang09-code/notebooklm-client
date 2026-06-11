@@ -822,6 +822,20 @@ MIT
 
 ## Changelog / 更新日志
 
+### v0.8.1 (2026-06-11)
+
+- **Markdown viewer polish** — the document viewer (Markdown/HTML artifacts) gains an **A− / A+ text-size stepper** (12–22 px; all body styles are em-based so headings, code and tables scale together) and a **"Filter headings…" search box** in the outline sidebar for long documents (shown at 6+ headings).
+- **Mermaid rendering feedback** — ```` ```mermaid ```` fences now show a "Rendering diagram…" placeholder while the ~1.5 MB mermaid bundle lazy-loads (source blocks are restored if the bundle fails to load offline). Also fixed a DOM leak where a diagram that failed to parse left mermaid's scratch element behind in `<body>`.
+- **Note editor save hygiene** — the Save button is disabled while there are no changes, so re-saving an unedited note can no longer trigger a pointless re-ingest/re-embed; closing (incl. Escape) is blocked while a save is in flight.
+
+---
+
+- **Markdown 查看器增强** —— 文档查看器（Markdown/HTML 产物）新增 **A− / A+ 字号调节**（12–22 px；正文样式均基于 em，标题、代码、表格同步缩放），大纲侧栏新增**标题过滤搜索框**（标题数 ≥ 6 时显示），方便浏览长文档。
+- **Mermaid 渲染体验** —— ```` ```mermaid ```` 代码块在懒加载约 1.5 MB 的 mermaid 包期间显示「Rendering diagram…」占位符（离线加载失败时还原源码块）；并修复了图表解析失败时 mermaid 临时元素残留在 `<body>` 中的 DOM 泄漏。
+- **笔记编辑器保存优化** —— 内容无改动时禁用保存按钮，避免重复保存未修改的笔记触发无意义的重新入库 / 重新嵌入；保存进行中阻止关闭（含 Escape）。
+
+---
+
 ### v0.8.0 (2026-05-20)
 
 - **Multi-provider Vector Embeddings** — You can now choose where to generate text embeddings via the `EMBEDDING_PROVIDER` env variable:

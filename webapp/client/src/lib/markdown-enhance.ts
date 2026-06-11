@@ -33,7 +33,25 @@ async function renderMermaid(el: HTMLElement, isCancelled: CancelFn): Promise<vo
   const blocks = Array.from(el.querySelectorAll<HTMLElement>('code.language-mermaid'));
   if (blocks.length === 0) return;
 
-  const mermaid = (await import('mermaid')).default;
+  // Swap each fence for a placeholder right away — the mermaid bundle is
+  // ~1.5 MB, so on a cold cache the first diagram can take seconds to appear.
+  const jobs = blocks.map((code) => {
+    const host = (code.closest('pre') ?? code) as HTMLElement;
+    const placeholder = document.createElement('div');
+    placeholder.className = 'mermaid-loading';
+    placeholder.textContent = 'Rendering diagram…';
+    host.replaceWith(placeholder);
+    return { host, placeholder, src: code.textContent ?? '' };
+  });
+
+  let mermaid: Awaited<typeof import('mermaid')>['default'];
+  try {
+    mermaid = (await import('mermaid')).default;
+  } catch {
+    // Bundle failed to load (offline?) — put the source blocks back.
+    for (const { host, placeholder } of jobs) placeholder.replaceWith(host);
+    return;
+  }
   if (isCancelled()) return;
 
   const dark = document.body.dataset.theme === 'dark';
@@ -44,23 +62,24 @@ async function renderMermaid(el: HTMLElement, isCancelled: CancelFn): Promise<vo
     fontFamily: 'inherit',
   });
 
-  for (const code of blocks) {
+  for (const { host, placeholder, src } of jobs) {
     if (isCancelled()) return;
-    const host = code.closest('pre') ?? code;
-    const src = code.textContent ?? '';
+    const renderId = `mmd-${Date.now()}-${++mermaidCounter}`;
     try {
-      const { svg } = await mermaid.render(`mmd-${Date.now()}-${++mermaidCounter}`, src);
+      const { svg } = await mermaid.render(renderId, src);
       if (isCancelled()) return;
       const wrap = document.createElement('div');
       wrap.className = 'mermaid-diagram';
       wrap.innerHTML = svg; // SVG produced by mermaid in strict mode
-      host.replaceWith(wrap);
+      placeholder.replaceWith(wrap);
     } catch (err) {
+      // A parse failure leaves mermaid's scratch element behind in <body>.
+      document.getElementById(`d${renderId}`)?.remove();
       if (isCancelled()) return;
       const note = document.createElement('div');
       note.className = 'mermaid-error';
       note.textContent = `Mermaid error: ${err instanceof Error ? err.message : String(err)}`;
-      host.before(note); // keep the source block visible below the error
+      placeholder.replaceWith(note, host); // keep the source block visible below the error
     }
   }
 }

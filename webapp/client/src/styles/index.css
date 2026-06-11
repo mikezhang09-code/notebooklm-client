@@ -2971,6 +2971,19 @@ body[data-theme='dark'] .pick-tile .g-ic {
   accent-color: var(--accent);
 }
 
+/* Shown in place of a ```mermaid fence while the (large, lazy-loaded) mermaid
+   bundle downloads and renders. */
+.md-body .mermaid-loading {
+  margin: 0 0 1.2em;
+  padding: 22px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--card-2);
+  color: var(--muted);
+  font-size: 0.85em;
+  text-align: center;
+}
+
 /* Mermaid diagrams (markdown-enhance.ts swaps the code block for inline SVG). */
 .md-body .mermaid-diagram {
   margin: 0 0 1.2em;
@@ -3292,6 +3305,56 @@ body[data-theme='dark'] .pick-tile .g-ic {
 .md-outline a.lvl-1 {
   font-weight: 600;
   color: var(--ink);
+}
+.md-outline-filter {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+.md-outline-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.md-outline-empty {
+  display: block;
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+/* A− / A+ text-size stepper in the viewer header. */
+.font-step {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.font-step button {
+  border: 0;
+  background: var(--card);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.font-step button + button {
+  border-left: 1px solid var(--line);
+}
+.font-step button:hover:not(:disabled) {
+  background: var(--card-2);
+  color: var(--ink);
+}
+.font-step button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 @media (max-width: 1180px) {

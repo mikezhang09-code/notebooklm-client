@@ -91,6 +91,7 @@ export default function MarkdownEditor({
   }, [dirty]);
 
   function requestClose() {
+    if (busy) return; // don't tear down mid-save
     if (dirty && !window.confirm('Discard unsaved changes?')) return;
     onClose();
   }
@@ -246,7 +247,8 @@ export default function MarkdownEditor({
               </button>
             ))}
           </div>
-          <button className="btn btn-primary" disabled={busy} onClick={save}>
+          {/* Disabled while clean so an unchanged edit can't trigger a pointless re-ingest/re-embed. */}
+          <button className="btn btn-primary" disabled={busy || !dirty} onClick={save}>
             {busy ? 'Saving…' : editId ? 'Save' : 'Save note'}
           </button>
           <button className="icon-btn" onClick={requestClose}>
