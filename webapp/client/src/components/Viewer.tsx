@@ -11,6 +11,7 @@ import * as ReactDOMClient from 'react-dom/client';
 import { Icon } from './Icon';
 import MindmapView from './MindmapView';
 import { MarkdownView, sanitizeHtml } from '../lib/markdown';
+import { copyText } from '../lib/markdown-enhance';
 import { getView, DOCX_MIME, type ViewPayload } from '../lib/artifacts';
 
 // The Word editor pulls in ProseMirror + the OOXML engine — keep it out of
@@ -724,9 +725,39 @@ function CodeView({ content, language }: { content: string; language: string }) 
 
   return (
     <div className="code-view">
-      <pre>
-        <code ref={codeRef} className={`language-${language}`}>{content}</code>
-      </pre>
+      <div className="code-block">
+        <pre>
+          <code ref={codeRef} className={`language-${language}`}>{content}</code>
+        </pre>
+        <CopyCodeButton text={content} />
+      </div>
     </div>
+  );
+}
+
+/** "Copy" button for React-rendered code blocks (markdown ones get theirs in markdown-enhance). */
+function CopyCodeButton({ text }: { text: string }) {
+  const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  function onCopy() {
+    void copyText(text).then((ok) => {
+      setState(ok ? 'ok' : 'fail');
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setState('idle'), 1500);
+    });
+  }
+
+  return (
+    <button
+      type="button"
+      className={state === 'ok' ? 'code-copy ok' : 'code-copy'}
+      title="Copy code"
+      onClick={onCopy}
+    >
+      {state === 'idle' ? 'Copy' : state === 'ok' ? 'Copied ✓' : 'Copy failed'}
+    </button>
   );
 }

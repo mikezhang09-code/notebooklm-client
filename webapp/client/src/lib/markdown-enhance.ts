@@ -5,6 +5,7 @@
  *   • Mermaid    — ```mermaid fenced blocks → inline SVG diagrams
  *   • highlight.js — syntax-highlight other fenced code blocks
  *   • KaTeX      — render $$…$$ / \[…\] (display) and \(…\) (inline) math
+ *   • Copy buttons — a hover "Copy" button on every fenced code block
  *
  * Every library is loaded with a dynamic import() so none of them land in the
  * main bundle — they only download the first time a document actually needs a
@@ -20,11 +21,72 @@ let mermaidCounter = 0;
 
 /** Run all enhancement passes over a freshly-rendered container. */
 export async function enhanceMarkdown(el: HTMLElement, isCancelled: CancelFn): Promise<void> {
-  await Promise.all([
-    renderMermaid(el, isCancelled),
-    highlightCode(el, isCancelled),
-    renderMath(el, isCancelled),
-  ]);
+  // renderMermaid first: it synchronously swaps ```mermaid fences for
+  // placeholders before addCopyButtons looks for code blocks.
+  const mermaidPass = renderMermaid(el, isCancelled);
+  addCopyButtons(el);
+  await Promise.all([mermaidPass, highlightCode(el, isCancelled), renderMath(el, isCancelled)]);
+}
+
+// ── Copy buttons ─────────────────────────────────────────────────────────────
+
+/** Copy text to the clipboard; falls back to execCommand on non-secure origins. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      return document.execCommand('copy');
+    } catch {
+      return false;
+    } finally {
+      ta.remove();
+    }
+  }
+}
+
+/** Brief inline feedback on a copy button after a copy attempt. */
+export function flashCopyFeedback(btn: HTMLButtonElement, ok: boolean): void {
+  btn.textContent = ok ? 'Copied ✓' : 'Copy failed';
+  btn.classList.toggle('ok', ok);
+  window.setTimeout(() => {
+    btn.textContent = 'Copy';
+    btn.classList.remove('ok');
+  }, 1500);
+}
+
+/**
+ * Wrap every fenced code block in a positioned `.code-block` container and add
+ * a "Copy" button. Safe to mutate here: `.md-body` children are set via
+ * innerHTML, so React doesn't own them.
+ */
+function addCopyButtons(el: HTMLElement): void {
+  for (const pre of Array.from(el.querySelectorAll<HTMLPreElement>('pre'))) {
+    const code = pre.querySelector('code');
+    if (!code || code.classList.contains('language-mermaid')) continue;
+    if (pre.parentElement?.classList.contains('code-block')) continue;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'code-copy';
+    btn.title = 'Copy code';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', () => {
+      void copyText(code.textContent ?? '').then((ok) => flashCopyFeedback(btn, ok));
+    });
+
+    pre.replaceWith(wrap);
+    wrap.append(pre, btn);
+  }
 }
 
 // ── Mermaid ──────────────────────────────────────────────────────────────────
