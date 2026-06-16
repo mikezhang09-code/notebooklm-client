@@ -28,6 +28,7 @@ import {
   searchCorpus,
   chatCorpus,
   chatCorpusStream,
+  assistText,
   getChatPersist,
   setChatPersist,
   getChatThread,
@@ -54,6 +55,7 @@ import {
   deleteCollection,
 } from '../corpus/collections.js';
 import { getNotebookTags, setNotebookTags } from '../corpus/notebooks.js';
+import { assembleCollectionText } from '../corpus/collection-context.js';
 import {
   getIndexStatus,
   listUnchunked,
@@ -83,6 +85,7 @@ const ALLOWED_KINDS: ArtifactKind[] = [
   'slides',
   'data_table',
   'mind',
+  'diagram',
   'upload',
   'note',
   'qa',
@@ -1522,6 +1525,259 @@ function parseChatRequest(
     },
   };
 }
+
+/**
+ * POST /api/corpus/diagram/assist — AI Mermaid assistant.
+ *
+ * Body: { instruction: string, code?: string, collectionId?: string }.
+ * Produces or revises a Mermaid diagram from a natural-language instruction
+ * (optionally starting from the `code` the editor currently holds). When
+ * `collectionId` is set, the diagram is grounded in that collection's
+ * artifacts via scoped retrieval. Returns { mermaid, explanation, usedSources }.
+ */
+const MERMAID_FENCE_RE = /```(?:mermaid)?\s*\n([\s\S]*?)```/i;
+// Keep the grounding context comfortably within the prompt budget.
+const DIAGRAM_CONTEXT_CHAR_CAP = 6000;
+
+corpusRouter.post(
+  '/diagram/assist',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    if (cfg.chatProvider === 'disabled') {
+      res.status(503).json({
+        error: 'AI is disabled — set CHAT_PROVIDER or GEMINI_API_KEY in .env to enable',
+      });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      instruction?: unknown;
+      code?: unknown;
+      collectionId?: unknown;
+    };
+    const instruction = typeof body.instruction === 'string' ? body.instruction.trim() : '';
+    const code = typeof body.code === 'string' ? body.code : '';
+    const collectionId =
+      typeof body.collectionId === 'string' && body.collectionId.trim()
+        ? body.collectionId.trim()
+        : undefined;
+    if (!instruction) {
+      res.status(400).json({ error: 'instruction is required' });
+      return;
+    }
+
+    // Collection-scoped grounding: retrieve the most relevant chunks for the
+    // instruction and fold them into a plain context block. Best-effort — any
+    // retrieval failure (or sparse/un-indexed collection) degrades silently to
+    // an ungrounded, instruction-only generation.
+    let contextBlock = '';
+    const usedSources: string[] = [];
+    if (collectionId) {
+      try {
+        // No maxDistance: the user already scoped to this collection, so the
+        // collection *is* the relevance filter. We take its best-matching
+        // chunks even when the instruction (e.g. "generate a diagram of the
+        // main workflow") embeds far from the source text. The query still
+        // orders which chunks/artifacts surface first.
+        const result = await searchCorpus(cfg, {
+          query: instruction,
+          collectionId,
+          artifactLimit: 6,
+          snippetsPerArtifact: 2,
+        });
+        let budget = DIAGRAM_CONTEXT_CHAR_CAP;
+        const parts: string[] = [];
+        for (const hit of result.hits) {
+          const snippet = hit.snippets
+            .map((s) => s.text.trim())
+            .filter(Boolean)
+            .join(' … ')
+            .slice(0, 1200);
+          if (!snippet) continue;
+          const entry = `## ${hit.artifact.title}\n${snippet}`;
+          if (entry.length > budget) break;
+          budget -= entry.length;
+          parts.push(entry);
+          usedSources.push(hit.artifact.title);
+        }
+        if (parts.length > 0) {
+          contextBlock =
+            'Context from the collection (use it to inform the diagram):\n\n' +
+            parts.join('\n\n') +
+            '\n\n';
+        }
+      } catch (err) {
+        console.warn(
+          '[corpus.diagram] grounding retrieval failed; generating ungrounded: ' +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+
+    const system =
+      'You are a Mermaid diagram assistant. Return a single valid Mermaid ' +
+      'diagram that satisfies the user\'s request. Reply with the diagram in a ' +
+      'fenced ```mermaid code block, then one short sentence (outside the block) ' +
+      'explaining what you produced. Output only valid Mermaid syntax inside the ' +
+      'block — no prose, comments, or markdown inside it.' +
+      (contextBlock
+        ? ' Base the diagram on the provided collection context where relevant; ' +
+          'fall back to sensible defaults for anything it does not cover.'
+        : '');
+    const user =
+      contextBlock +
+      (code.trim()
+        ? `Current diagram:\n\`\`\`mermaid\n${code.trim()}\n\`\`\`\n\n`
+        : 'There is no diagram yet; create one from scratch.\n\n') +
+      `Request: ${instruction}`;
+
+    const raw = await assistText(cfg, { system, user, maxTokens: 1400, temperature: 0.2 });
+    const fence = MERMAID_FENCE_RE.exec(raw);
+    const mermaid = (fence?.[1] ?? raw).trim();
+    const explanation = (
+      fence
+        ? raw.replace(fence[0], '').replace(/^[\s>*-]+/, '').trim().split('\n')[0]?.trim() ?? ''
+        : ''
+    )
+      // Drop any [1] / [1, 2, 3]-style citation markers the model adds when grounded.
+      .replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, '')
+      .trim();
+    // Dedupe titles for the "grounded in N files" note.
+    res.json({ mermaid, explanation, usedSources: [...new Set(usedSources)] });
+  }),
+);
+
+/**
+ * POST /api/corpus/collections/:id/generate — AI generation grounded in a
+ * collection's files (no NotebookLM round-trip).
+ *
+ * Body: { kind: 'quiz'|'flashcards'|'mind', fileIds?: string[], count?: number,
+ *         difficulty?: string, instructions?: string, title?: string }.
+ * Assembles the text of the selected (default: all) collection artifacts,
+ * prompts the chat model to produce the artifact's JSON in the shape the
+ * viewers/editors read, then ingests it back into the collection. Returns
+ * { id, title, kind }.
+ */
+const GEN_FROM_COLLECTION_CHAR_CAP = 24000;
+
+function extractJsonBlob(raw: string): string {
+  const fenced = /```(?:json)?\s*\n([\s\S]*?)```/i.exec(raw);
+  const body = fenced?.[1] ?? raw;
+  const start = body.search(/[[{]/);
+  if (start < 0) return body.trim();
+  // Walk to the matching final bracket so trailing prose is dropped.
+  const open = body[start];
+  const close = open === '{' ? '}' : ']';
+  const end = body.lastIndexOf(close);
+  return end > start ? body.slice(start, end + 1).trim() : body.slice(start).trim();
+}
+
+function diagramKindLabel(kind: string): string {
+  return kind === 'quiz' ? 'quiz' : kind === 'flashcards' ? 'flashcard deck' : 'mind map';
+}
+
+corpusRouter.post(
+  '/collections/:id/generate',
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    if (cfg.chatProvider === 'disabled') {
+      res.status(503).json({
+        error: 'AI is disabled — set CHAT_PROVIDER or GEMINI_API_KEY in .env to enable',
+      });
+      return;
+    }
+    const collectionId = req.params['id'];
+    if (!collectionId || !ULID_RE.test(collectionId)) {
+      res.status(400).json({ error: 'invalid collection id' });
+      return;
+    }
+    const body = (req.body ?? {}) as {
+      kind?: unknown;
+      fileIds?: unknown;
+      count?: unknown;
+      difficulty?: unknown;
+      instructions?: unknown;
+      title?: unknown;
+    };
+    const kind = body.kind === 'quiz' || body.kind === 'flashcards' || body.kind === 'mind' ? body.kind : null;
+    if (!kind) {
+      res.status(400).json({ error: 'kind must be quiz, flashcards, or mind' });
+      return;
+    }
+    const fileIds = Array.isArray(body.fileIds)
+      ? body.fileIds.filter((x): x is string => typeof x === 'string' && ULID_RE.test(x))
+      : [];
+    const count = typeof body.count === 'number' && body.count > 0 ? Math.min(40, Math.floor(body.count)) : undefined;
+    const difficulty = typeof body.difficulty === 'string' ? body.difficulty.trim() : '';
+    const instructions = typeof body.instructions === 'string' ? body.instructions.trim() : '';
+
+    // Assemble a capped context block from the selected (default: all)
+    // collection artifacts' extracted text.
+    const { text: context, sources } = await assembleCollectionText(
+      cfg,
+      collectionId,
+      fileIds,
+      GEN_FROM_COLLECTION_CHAR_CAP,
+    );
+    if (!context) {
+      res.status(422).json({ error: 'could not extract text from the selected files' });
+      return;
+    }
+
+    const shape =
+      kind === 'quiz'
+        ? 'A JSON object: {"questions":[{"question":string,"hint":string,"answerOptions":[{"text":string,"rationale":string,"isCorrect":boolean}]}]}. ' +
+          'Each question must have 3–4 options with exactly one isCorrect:true and a short rationale per option.'
+        : kind === 'flashcards'
+          ? 'A JSON object: {"cards":[{"front":string,"back":string}]}. Front is a question/term, back is the answer.'
+          : 'A JSON object: {"name":string,"children":[{"name":string,"children":[...]}]}. A single root whose name is the central topic, nested 2–3 levels deep.';
+    const sizeHint =
+      kind === 'mind'
+        ? ''
+        : ` Produce ${count ?? (kind === 'quiz' ? 8 : 12)} ${kind === 'quiz' ? 'questions' : 'cards'}.`;
+    const system =
+      `You create study material from source documents. Output ONLY a single JSON object — no prose, no markdown fences. ` +
+      `Target shape: ${shape}${sizeHint}` +
+      (difficulty ? ` Difficulty: ${difficulty}.` : '') +
+      (instructions ? ` Extra guidance: ${instructions}.` : '');
+    const user =
+      `Using ONLY the following source material, generate a ${diagramKindLabel(kind)}.\n\n` +
+      `Source material:\n${context}`;
+
+    const raw = await assistText(cfg, { system, user, maxTokens: 3000, temperature: 0.3 });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(extractJsonBlob(raw));
+    } catch {
+      res.status(502).json({ error: 'the model did not return valid JSON; try again' });
+      return;
+    }
+    const json = JSON.stringify(parsed, null, 2);
+    const title =
+      typeof body.title === 'string' && body.title.trim()
+        ? body.title.trim()
+        : `${kind === 'quiz' ? 'Quiz' : kind === 'flashcards' ? 'Flashcards' : 'Mind map'} — ${sources[0] ?? 'collection'}`;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const prefix = kind === 'mind' ? 'mindmap' : kind;
+    const result = await ingestArtifact({
+      buffer: Buffer.from(json, 'utf8'),
+      title,
+      kind,
+      origin: 'upload',
+      mimeType: 'application/json',
+      filename: `${prefix}-${stamp}.json`,
+      collectionId,
+    });
+    res.status(201).json({ id: result.id, title, kind });
+  }),
+);
 
 corpusRouter.post(
   '/chat',

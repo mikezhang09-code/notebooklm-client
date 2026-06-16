@@ -16,6 +16,7 @@ export type TypeKey =
   | 'slides'
   | 'table'
   | 'mind'
+  | 'diagram'
   | 'note';
 
 export interface ArtifactType {
@@ -47,6 +48,9 @@ export const TYPES: ArtifactType[] = [
   { key: 'table', label: 'Data table', plural: 'Data tables', icon: 'i-table', color: '#8a7c4a', generate: true, backendKind: 'data-table', ingestKind: 'data_table' },
   // Mindmaps generate as a note-backed JSON node tree (headless, no browser).
   { key: 'mind', label: 'Mindmap', plural: 'Mindmaps', icon: 'i-mind', color: '#5b6bbf', generate: true, backendKind: 'mind', ingestKind: 'mind', isNew: true },
+  // Diagrams are raw Mermaid (.mmd) authored in-app (with AI assist); not a
+  // NotebookLM generate type, so they're built by hand or uploaded.
+  { key: 'diagram', label: 'Diagram', plural: 'Diagrams', icon: 'i-diagram', color: '#3f8a86', generate: false, backendKind: null, ingestKind: 'diagram', isNew: true },
   // Note: hand-written markdown — created via the editor, not generated/uploaded.
   { key: 'note', label: 'Note', plural: 'Notes', icon: 'i-doc', color: '#6d8a96', generate: false, backendKind: null, ingestKind: 'note' },
 ];
@@ -178,6 +182,8 @@ export const GEN_SPEC: Record<TypeKey, GenSpec> = {
   },
   // Documents are uploaded Word files edited in-app — no generate spec.
   doc: { fields: [], instructions: false, language: false },
+  // Diagrams are authored in the Mermaid editor (with AI assist) — no spec.
+  diagram: { fields: [], instructions: false, language: false },
   // Notes are hand-written, not generated — no generate spec.
   note: { fields: [], instructions: false, language: false },
 };
@@ -206,6 +212,7 @@ const KIND_TO_KEY: Record<string, TypeKey> = {
   slides: 'slides',
   data_table: 'table',
   mind: 'mind',
+  diagram: 'diagram',
   note: 'note',
 };
 

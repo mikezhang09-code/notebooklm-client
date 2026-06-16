@@ -6,8 +6,16 @@ import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { describe, SOURCES } from '../lib/registry';
 import { getDownloadUrl, deleteItem, shareItem, getRawText, isEditable, type Item } from '../lib/artifacts';
+import { isStudyKind } from '../lib/study';
 import { toast } from '../lib/toast';
 import Viewer from './Viewer';
+import QuizView from './QuizView';
+import FlashcardsView from './FlashcardsView';
+import DiagramView from './DiagramView';
+import QuizEditor from './QuizEditor';
+import FlashcardsEditor from './FlashcardsEditor';
+import MindmapEditor from './MindmapEditor';
+import DiagramEditor from './DiagramEditor';
 import CorpusChat from './CorpusChat';
 import MarkdownEditor from './MarkdownEditor';
 import EditItemDrawer from './EditItemDrawer';
@@ -36,7 +44,12 @@ export default function ItemModal({
   const [chatting, setChatting] = useState(false);
   const [editContent, setEditContent] = useState<string | null>(null);
   const [editingDetails, setEditingDetails] = useState(false);
+  const [studyEditing, setStudyEditing] = useState(false);
   const editable = isEditable(item);
+  // Quiz / flashcard / mind-map / diagram artifacts get the visual editors
+  // (NotebookLM-sourced ones are managed upstream and stay read-only).
+  const studyEditable = item.provenance !== 'notebooklm' && isStudyKind(item.kind);
+  const diagramEditable = item.provenance !== 'notebooklm' && item.kind === 'diagram';
   // NotebookLM-sourced artifacts are managed upstream — details aren't editable.
   const detailsEditable = item.provenance !== 'notebooklm';
 
@@ -137,6 +150,11 @@ export default function ItemModal({
               <Icon id="i-doc" /> Edit
             </button>
           )}
+          {(studyEditable || diagramEditable) && (
+            <button className="btn btn-soft" onClick={() => setStudyEditing(true)}>
+              <Icon id="i-doc" /> Edit
+            </button>
+          )}
           {detailsEditable && (
             <button className="btn btn-soft" onClick={() => setEditingDetails(true)}>
               <Icon id="i-gear" /> Details
@@ -175,7 +193,64 @@ export default function ItemModal({
         </div>
       </div>
 
-      {viewing && <Viewer id={item.id} title={item.title} tc={t.color} onClose={() => setViewing(false)} />}
+      {viewing && item.kind === 'quiz' ? (
+        <QuizView
+          item={item}
+          tc={t.color}
+          onClose={() => setViewing(false)}
+          onEdit={studyEditable ? () => { setViewing(false); setStudyEditing(true); } : undefined}
+        />
+      ) : viewing && item.kind === 'flashcards' ? (
+        <FlashcardsView
+          item={item}
+          tc={t.color}
+          onClose={() => setViewing(false)}
+          onEdit={studyEditable ? () => { setViewing(false); setStudyEditing(true); } : undefined}
+        />
+      ) : viewing && item.kind === 'diagram' ? (
+        <DiagramView
+          item={item}
+          tc={t.color}
+          onClose={() => setViewing(false)}
+          onEdit={diagramEditable ? () => { setViewing(false); setStudyEditing(true); } : undefined}
+        />
+      ) : viewing ? (
+        <Viewer id={item.id} title={item.title} tc={t.color} onClose={() => setViewing(false)} />
+      ) : null}
+
+      {studyEditing && (item.kind === 'quiz' ? (
+        <QuizEditor
+          editId={item.id}
+          initialTitle={item.title}
+          tc={t.color}
+          onClose={() => setStudyEditing(false)}
+          onSaved={() => { setStudyEditing(false); onDeleted?.(); onClose(); }}
+        />
+      ) : item.kind === 'flashcards' ? (
+        <FlashcardsEditor
+          editId={item.id}
+          initialTitle={item.title}
+          tc={t.color}
+          onClose={() => setStudyEditing(false)}
+          onSaved={() => { setStudyEditing(false); onDeleted?.(); onClose(); }}
+        />
+      ) : item.kind === 'diagram' ? (
+        <DiagramEditor
+          editId={item.id}
+          initialTitle={item.title}
+          tc={t.color}
+          onClose={() => setStudyEditing(false)}
+          onSaved={() => { setStudyEditing(false); onDeleted?.(); onClose(); }}
+        />
+      ) : (
+        <MindmapEditor
+          editId={item.id}
+          initialTitle={item.title}
+          tc={t.color}
+          onClose={() => setStudyEditing(false)}
+          onSaved={() => { setStudyEditing(false); onDeleted?.(); onClose(); }}
+        />
+      ))}
 
       {chatting && (
         <div

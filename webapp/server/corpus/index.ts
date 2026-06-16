@@ -48,6 +48,8 @@ export {
 export type { TranscriptionStatus } from './transcribe.js';
 
 export { searchCorpus } from './search.js';
+export { assembleCollectionText } from './collection-context.js';
+export type { CollectionContext } from './collection-context.js';
 export type {
   SearchOptions,
   SearchResult,
@@ -55,7 +57,7 @@ export type {
   SearchSnippet,
 } from './search.js';
 
-export { chatCorpus, chatCorpusStream } from './chat.js';
+export { chatCorpus, chatCorpusStream, assistText } from './chat.js';
 export {
   getChatPersist,
   setChatPersist,

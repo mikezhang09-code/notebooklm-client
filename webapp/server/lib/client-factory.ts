@@ -4,13 +4,21 @@
  * the strongest available TLS fingerprint (curl-impersonate > tls-client > undici).
  */
 
-import { NotebookClient } from 'notebooklm-client';
+import { NotebookClient, refreshTokens } from 'notebooklm-client';
 import type { NotebookRpcSession } from 'notebooklm-client';
 
 export interface WithClientOptions {
   session: NotebookRpcSession;
   /** Optional proxy URL. Defaults to env HTTPS_PROXY/ALL_PROXY if set. */
   proxy?: string;
+  /**
+   * Rotate the session's auth token (via its cookies) before connecting. Worth
+   * it ahead of long NotebookLM operations (generation), where a token valid at
+   * request time can lapse mid-run and surface as UNAUTHENTICATED. Best-effort:
+   * if the refresh call fails the original session is used, and a truly-dead
+   * session still surfaces a clear auth error downstream.
+   */
+  refreshFirst?: boolean;
   /**
    * Per-request read timeout (seconds) for the underlying HTTP transport.
    * Honoured by the tls-client tier (Windows tier-2), which ships with a
@@ -56,11 +64,25 @@ export async function withClient<T>(
   opts: WithClientOptions,
   fn: (client: NotebookClient) => Promise<T>,
 ): Promise<T> {
+  const proxy = resolveProxy(opts.proxy);
+  let session = opts.session;
+  if (opts.refreshFirst) {
+    try {
+      session = await refreshTokens(session, undefined, proxy);
+    } catch (err) {
+      // Refresh may transiently fail on a still-valid session; proceed with the
+      // original and let the real call surface any genuine auth error.
+      console.warn(
+        '[client-factory] pre-flight token refresh failed; using original session: ' +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
   const client = new NotebookClient();
   await client.connect({
     transport: 'auto',
-    session: opts.session,
-    proxy: resolveProxy(opts.proxy),
+    session,
+    proxy,
     timeoutSeconds: resolveTimeoutSeconds(opts.timeoutSeconds),
   });
   try {

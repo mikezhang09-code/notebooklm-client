@@ -681,3 +681,66 @@ export async function chatCorpusStream(
     outputTokens: outcome.outputTokens,
   };
 }
+
+/**
+ * Provider-agnostic single-shot text completion (no retrieval, no citations).
+ *
+ * Used by lightweight AI helpers like the diagram assistant: feeds `system` as
+ * the preamble and `user` as the message, walks the same provider chain the
+ * corpus chat uses, and returns the model's raw text. Throws if every provider
+ * in the chain fails (or chat is disabled).
+ */
+export async function assistText(
+  cfg: CorpusConfig,
+  opts: { system: string; user: string; maxTokens?: number; temperature?: number },
+): Promise<string> {
+  if (cfg.chatProvider === 'disabled') {
+    throw new Error('AI is disabled — set CHAT_PROVIDER or GEMINI_API_KEY in .env to enable');
+  }
+  const chain =
+    cfg.chatProviderChain.length > 0 ? cfg.chatProviderChain : [cfg.chatProvider];
+  const maxTokens = opts.maxTokens ?? 1200;
+  const temperature = opts.temperature ?? 0.2;
+  let lastErr: unknown;
+
+  for (const provider of chain) {
+    try {
+      if (provider === 'gemini') {
+        // Gemini streams; collect the full text via a no-op delta sink.
+        const outcome = await chatGeminiStream(
+          cfg,
+          { question: opts.user, preamble: opts.system, history: [], documents: [] },
+          () => {},
+        );
+        return outcome.text;
+      }
+      if (provider === 'mimo') {
+        const outcome = await chatMimo(cfg, {
+          question: opts.user,
+          preamble: opts.system,
+          history: [],
+          documents: [],
+          maxTokens,
+          temperature,
+        });
+        return outcome.text;
+      }
+      const outcome = await chatCohere(cfg, {
+        question: opts.user,
+        preamble: opts.system,
+        history: [],
+        documents: [],
+        maxTokens,
+        temperature,
+      });
+      return outcome.text;
+    } catch (err) {
+      lastErr = err;
+      console.warn(
+        `[corpus.assist] provider "${provider}" failed: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('all AI providers failed');
+}

@@ -1,6 +1,7 @@
 /**
  * Creation flow modals:
- *  - <TypePicker> — "What do you want to make?" 9-tile grid.
+ *  - <TypePicker> — "What do you want to make?" tile grid (excludes Document,
+ *    which is upload-only).
  *  - <CreateChooser> — Upload-or-Generate for a known type.
  * Both are presentational; the parent wires the resulting action.
  */
@@ -28,7 +29,10 @@ export function TypePicker({
             </button>
           </div>
           <div className="pick-grid">
-            {TYPES.map((t) => (
+            {/* Documents aren't "made" here — they're uploaded Word files
+                (added via the Upload button / Documents section), so they're
+                left out of the "what do you want to make?" grid. */}
+            {TYPES.filter((t) => t.key !== 'doc').map((t) => (
               <button
                 key={t.key}
                 className="pick-tile"
@@ -54,6 +58,7 @@ export function CreateChooser({
   onUpload,
   onGenerate,
   onWrite,
+  onBuild,
   onClose,
 }: {
   typeKey: TypeKey;
@@ -61,9 +66,12 @@ export function CreateChooser({
   onGenerate: () => void;
   /** Offered for hand-written types (notes): open the markdown editor. */
   onWrite?: () => void;
+  /** Offered for quiz / flashcards / mind maps: open the structured visual editor. */
+  onBuild?: () => void;
   onClose: () => void;
 }) {
   const t = TYPE[typeKey];
+  const multi = t.generate || !!onWrite || !!onBuild;
   return (
     <div
       className="modal-root show"
@@ -79,16 +87,18 @@ export function CreateChooser({
               <p className="m-desc">
                 {onWrite
                   ? 'Write one in markdown, or upload a finished file.'
-                  : t.generate
-                    ? 'Upload a finished file, or generate one with AI.'
-                    : 'Upload a finished file to store it in your library.'}
+                  : onBuild
+                    ? `Build one by hand, generate with AI, or upload a finished file.`
+                    : t.generate
+                      ? 'Upload a finished file, or generate one with AI.'
+                      : 'Upload a finished file to store it in your library.'}
               </p>
             </div>
             <button className="icon-btn" onClick={onClose}>
               <Icon id="i-close" />
             </button>
           </div>
-          <div className={t.generate || onWrite ? 'choose2' : ''}>
+          <div className={multi ? 'choose2' : ''}>
             <button className="choose-card" onClick={onUpload}>
               <span className="ch-ic">
                 <Icon id="i-upload" />
@@ -103,6 +113,15 @@ export function CreateChooser({
                 </span>
                 <b>Write a {t.label.toLowerCase()}</b>
                 <small>Compose a new {t.label.toLowerCase()} in the markdown editor.</small>
+              </button>
+            )}
+            {onBuild && (
+              <button className="choose-card primary" onClick={onBuild}>
+                <span className="ch-ic">
+                  <Icon id={t.icon} />
+                </span>
+                <b>Build a {t.label.toLowerCase()}</b>
+                <small>Compose a new {t.label.toLowerCase()} in the visual editor.</small>
               </button>
             )}
             {t.generate && (

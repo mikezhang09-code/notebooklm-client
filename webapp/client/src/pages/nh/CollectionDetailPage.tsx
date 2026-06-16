@@ -9,10 +9,14 @@ import { Icon } from '../../components/Icon';
 import CorpusChat from '../../components/CorpusChat';
 import ItemModal from '../../components/ItemModal';
 import MarkdownEditor from '../../components/MarkdownEditor';
+import QuizEditor from '../../components/QuizEditor';
+import FlashcardsEditor from '../../components/FlashcardsEditor';
+import MindmapEditor from '../../components/MindmapEditor';
+import DiagramEditor from '../../components/DiagramEditor';
 import UploadDrawer from '../../components/UploadDrawer';
-import { TypePicker } from '../../components/CreateFlow';
-import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
-import { describe, type TypeKey } from '../../lib/registry';
+import { TypePicker, CreateChooser } from '../../components/CreateFlow';
+import GenerateFromCollectionDrawer from '../../components/GenerateFromCollectionDrawer';
+import { describe, TYPE, type TypeKey } from '../../lib/registry';
 import {
   getCollection,
   updateCollection,
@@ -42,7 +46,12 @@ export default function CollectionDetailPage() {
   const [open, setOpen] = useState<Item | null>(null);
   const [noteEditing, setNoteEditing] = useState(false);
   const [picking, setPicking] = useState(false);
-  const [genType, setGenType] = useState<TypeKey | null>(null);
+  // Quiz / flashcards / mind maps offer build-by-hand, generate, or upload.
+  const [chooseType, setChooseType] = useState<TypeKey | null>(null);
+  const [buildType, setBuildType] = useState<TypeKey | null>(null);
+  // Generate any type from this collection's own files (quiz/flash/mind can
+  // also use the in-app AI; everything else is NotebookLM-only).
+  const [genFromType, setGenFromType] = useState<TypeKey | null>(null);
   const [editing, setEditing] = useState(false);
   const [tab, setTab] = useState<'files' | 'chat'>('files');
 
@@ -252,20 +261,86 @@ export default function CollectionDetailPage() {
           onPick={(key) => {
             setPicking(false);
             if (key === 'note') setNoteEditing(true);
-            else if (key === 'mind') toast('Mind-maps are created in NotebookLM');
-            else setGenType(key);
+            // Documents are uploaded Word files, not a generated type.
+            else if (key === 'doc') setUploadOpen(true);
+            else if (key === 'quiz' || key === 'flash' || key === 'mind') setChooseType(key);
+            else if (key === 'diagram') setBuildType(key);
+            // Remaining generatable types (audio/report/video/infographic/
+            // slides/data table): generate from the collection's files.
+            else if (TYPE[key].generate) setGenFromType(key);
           }}
         />
       )}
-      {genType && (
-        <GenerateStandaloneDrawer
-          typeKey={genType}
+      {chooseType && (
+        <CreateChooser
+          typeKey={chooseType}
+          onClose={() => setChooseType(null)}
+          onUpload={() => {
+            setChooseType(null);
+            setUploadOpen(true);
+          }}
+          onGenerate={() => {
+            const k = chooseType;
+            setChooseType(null);
+            // Generate from the collection's own files, not a new source.
+            setGenFromType(k);
+          }}
+          onBuild={() => {
+            const k = chooseType;
+            setChooseType(null);
+            setBuildType(k);
+          }}
+        />
+      )}
+
+      {buildType === 'quiz' && (
+        <QuizEditor
           collectionId={id}
-          onClose={() => setGenType(null)}
-          onDone={() => {
-            setGenType(null);
+          onClose={() => setBuildType(null)}
+          onSaved={() => {
+            setBuildType(null);
             void reload();
           }}
+        />
+      )}
+      {buildType === 'flash' && (
+        <FlashcardsEditor
+          collectionId={id}
+          onClose={() => setBuildType(null)}
+          onSaved={() => {
+            setBuildType(null);
+            void reload();
+          }}
+        />
+      )}
+      {buildType === 'mind' && (
+        <MindmapEditor
+          collectionId={id}
+          onClose={() => setBuildType(null)}
+          onSaved={() => {
+            setBuildType(null);
+            void reload();
+          }}
+        />
+      )}
+      {buildType === 'diagram' && (
+        <DiagramEditor
+          collectionId={id}
+          onClose={() => setBuildType(null)}
+          onSaved={() => {
+            setBuildType(null);
+            void reload();
+          }}
+        />
+      )}
+
+      {genFromType && col && (
+        <GenerateFromCollectionDrawer
+          typeKey={genFromType}
+          collectionId={id}
+          files={col.files}
+          onClose={() => setGenFromType(null)}
+          onDone={() => void reload()}
         />
       )}
 

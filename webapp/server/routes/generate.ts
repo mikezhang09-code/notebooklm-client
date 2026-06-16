@@ -19,6 +19,11 @@ import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
 import { openSseStream } from '../lib/sse.js';
 import { createJob } from '../lib/job-store.js';
+import { getCorpusConfig, assembleCollectionText } from '../corpus/index.js';
+
+// NotebookLM text sources comfortably hold tens of KB; cap the assembled
+// collection context so a huge collection can't blow past that.
+const COLLECTION_SOURCE_CHAR_CAP = 50000;
 
 export const generateRouter = Router();
 
@@ -39,14 +44,29 @@ type Kind =
   | 'data-table'
   | 'mind';
 
+const GENERATABLE_KINDS = new Set<string>([
+  'audio',
+  'report',
+  'video',
+  'quiz',
+  'flashcards',
+  'infographic',
+  'slides',
+  'data-table',
+  'mind',
+]);
+
 interface GenerateBody {
   source?: {
-    type: 'url' | 'text' | 'file' | 'research';
+    type: 'url' | 'text' | 'file' | 'research' | 'collection';
     url?: string;
     text?: string;
     topic?: string;
     researchMode?: 'fast' | 'deep';
     // file is supplied as a multipart field
+    // collection: the assembled files become a single NotebookLM text source
+    collectionId?: string;
+    fileIds?: string[];
   };
   /** When set, generate into this existing notebook instead of a fresh one. */
   notebookId?: string;
@@ -95,6 +115,23 @@ function buildSource(body: GenerateBody, filePath: string | undefined): SourceIn
 interface WorkflowOutput {
   downloadPaths: string[];
   meta: Record<string, unknown>;
+}
+
+/**
+ * Turn raw NotebookLM transport errors into actionable messages. The most
+ * common failure is an expired NotebookLM session, which surfaces from the
+ * private API as an opaque `UNAUTHENTICATED (code 16)` / 401 / 302-on-refresh.
+ */
+function friendlyGenerateError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/UNAUTHENTICATED|code 16|\b401\b|token refresh failed|HTTP 302|not authenticated/i.test(msg)) {
+    return (
+      'Your NotebookLM session has expired. Refresh it on the Session page ' +
+      '(or run `npx notebooklm export-session`), then try again. ' +
+      `(${msg})`
+    );
+  }
+  return msg;
 }
 
 async function runWorkflow(
@@ -271,6 +308,14 @@ generateRouter.post(
     const kind = req.params.kind as Kind;
     const stream = openSseStream(res);
 
+    // Reject unknown / non-generatable kinds up front. Without this an invalid
+    // kind (e.g. "null" from a type whose backendKind is null) falls through
+    // every workflow branch and crashes on `output.downloadPaths`.
+    if (!GENERATABLE_KINDS.has(kind)) {
+      stream.error(`"${kind}" is not a generatable type.`);
+      return;
+    }
+
     let file: { path: string; originalname?: string } | undefined;
     try {
       file = (req as unknown as { file?: { path: string; originalname?: string } }).file;
@@ -299,6 +344,30 @@ generateRouter.post(
         body = (req.body ?? {}) as GenerateBody;
       }
 
+      // A `collection` source means "generate from this collection's files via
+      // NotebookLM". We assemble the selected artifacts' text and hand it to the
+      // normal fresh-notebook workflow as a single text source — no per-file
+      // upload or source-readiness polling needed.
+      if (body.source?.type === 'collection') {
+        const collectionId = body.source.collectionId;
+        if (!collectionId) throw new Error('collectionId is required for a collection source');
+        const cfg = await getCorpusConfig();
+        if (!cfg) throw new Error('corpus subsystem is disabled');
+        stream.progress({ status: 'pending', message: 'Gathering collection files…' });
+        const { text, sources } = await assembleCollectionText(
+          cfg,
+          collectionId,
+          body.source.fileIds ?? [],
+          COLLECTION_SOURCE_CHAR_CAP,
+        );
+        if (!text) throw new Error('could not extract text from the selected collection files');
+        stream.progress({
+          status: 'pending',
+          message: `Using ${sources.length} file${sources.length !== 1 ? 's' : ''} from the collection…`,
+        });
+        body = { ...body, source: { type: 'text', text } };
+      }
+
       const job = await createJob();
 
       let output: WorkflowOutput;
@@ -306,7 +375,7 @@ generateRouter.post(
         // ── Mind map into an existing notebook (note-backed; no studio job) ──
         stream.progress({ status: 'generating', message: 'Generating mind map…' });
         const opt = (body.options ?? {}) as Record<string, string | undefined>;
-        output = await withClient({ session }, async (client) => {
+        output = await withClient({ session, refreshFirst: true }, async (client) => {
           const r = await client.generateMindMap(body.notebookId!, body.sourceIds, {
             language: opt.language,
             instructions: opt.instructions,
@@ -319,7 +388,7 @@ generateRouter.post(
         // ── Generate into an existing notebook (reuse its sources) ──
         stream.progress({ status: 'pending', message: `Starting ${kind} generation…` });
         const artifact = buildArtifactOptions(kind, (body.options ?? {}) as Record<string, string | undefined>);
-        output = await withClient({ session }, async (client) => {
+        output = await withClient({ session, refreshFirst: true }, async (client) => {
           const r = await client.runGenerateInNotebook(
             { notebookId: body.notebookId!, sourceIds: body.sourceIds, artifact, outputDir: job.dir },
             (p) => stream.progress(p),
@@ -333,7 +402,7 @@ generateRouter.post(
         // ── Create a fresh notebook from a supplied source ──
         const source = buildSource(body, file?.path);
         stream.progress({ status: 'pending', message: `Starting ${kind} generation…` });
-        output = await withClient({ session }, (client) =>
+        output = await withClient({ session, refreshFirst: true }, (client) =>
           runWorkflow(client, kind, source, job.dir, body.options ?? {}, (p) => {
             stream.progress(p);
           }),
@@ -355,7 +424,7 @@ generateRouter.post(
       });
     } catch (err) {
       if (!stream.closed) {
-        stream.error(err instanceof Error ? err.message : String(err));
+        stream.error(friendlyGenerateError(err));
       } else {
         next(err);
       }

@@ -12,6 +12,10 @@ import { CreateChooser } from '../../components/CreateFlow';
 import UploadDrawer from '../../components/UploadDrawer';
 import GenerateStandaloneDrawer from '../../components/GenerateStandaloneDrawer';
 import MarkdownEditor from '../../components/MarkdownEditor';
+import QuizEditor from '../../components/QuizEditor';
+import FlashcardsEditor from '../../components/FlashcardsEditor';
+import MindmapEditor from '../../components/MindmapEditor';
+import DiagramEditor from '../../components/DiagramEditor';
 import { TYPE, SOURCES, type TypeKey } from '../../lib/registry';
 import { listItems, fetchNotebookMap, resolveFrom, type Item, type Provenance } from '../../lib/artifacts';
 
@@ -45,7 +49,12 @@ export default function FreeFormTypePage() {
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [noteEditing, setNoteEditing] = useState(false);
+  const [building, setBuilding] = useState(false);
   const [tab, setTab] = useState<'list' | 'chat'>('list');
+
+  // Quiz / flashcards / mind maps / diagrams can be authored by hand in a visual editor.
+  const buildable =
+    typeKey === 'quiz' || typeKey === 'flash' || typeKey === 'mind' || typeKey === 'diagram';
 
   async function reload() {
     setLoading(true);
@@ -261,6 +270,14 @@ export default function FreeFormTypePage() {
                 }
               : undefined
           }
+          onBuild={
+            buildable
+              ? () => {
+                  setChoosing(false);
+                  setBuilding(true);
+                }
+              : undefined
+          }
         />
       )}
       {uploading && (
@@ -285,6 +302,46 @@ export default function FreeFormTypePage() {
           onClose={() => setNoteEditing(false)}
           onSaved={() => {
             setNoteEditing(false);
+            void reload();
+          }}
+        />
+      )}
+      {building && typeKey === 'quiz' && (
+        <QuizEditor
+          tc={t.color}
+          onClose={() => setBuilding(false)}
+          onSaved={() => {
+            setBuilding(false);
+            void reload();
+          }}
+        />
+      )}
+      {building && typeKey === 'flash' && (
+        <FlashcardsEditor
+          tc={t.color}
+          onClose={() => setBuilding(false)}
+          onSaved={() => {
+            setBuilding(false);
+            void reload();
+          }}
+        />
+      )}
+      {building && typeKey === 'mind' && (
+        <MindmapEditor
+          tc={t.color}
+          onClose={() => setBuilding(false)}
+          onSaved={() => {
+            setBuilding(false);
+            void reload();
+          }}
+        />
+      )}
+      {building && typeKey === 'diagram' && (
+        <DiagramEditor
+          tc={t.color}
+          onClose={() => setBuilding(false)}
+          onSaved={() => {
+            setBuilding(false);
             void reload();
           }}
         />

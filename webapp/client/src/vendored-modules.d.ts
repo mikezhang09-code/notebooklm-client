@@ -9,6 +9,7 @@ declare module 'highlight.js' {
 declare module 'mermaid' {
   interface MermaidApi {
     initialize(config: Record<string, unknown>): void;
+    parse(source: string): Promise<unknown>;
     render(id: string, source: string): Promise<{ svg: string }>;
   }
   const mermaid: MermaidApi;

@@ -33,6 +33,7 @@ export type ArtifactKind =
   | 'slides'
   | 'data_table'
   | 'mind'
+  | 'diagram'
   | 'upload'
   | 'note'
   | 'qa';
