@@ -16,6 +16,7 @@ import DiagramEditor from '../../components/DiagramEditor';
 import UploadDrawer from '../../components/UploadDrawer';
 import { TypePicker, CreateChooser } from '../../components/CreateFlow';
 import GenerateFromCollectionDrawer from '../../components/GenerateFromCollectionDrawer';
+import ExportToNotebookDrawer from '../../components/ExportToNotebookDrawer';
 import { describe, TYPE, type TypeKey } from '../../lib/registry';
 import {
   getCollection,
@@ -52,6 +53,7 @@ export default function CollectionDetailPage() {
   // Generate any type from this collection's own files (quiz/flash/mind can
   // also use the in-app AI; everything else is NotebookLM-only).
   const [genFromType, setGenFromType] = useState<TypeKey | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [tab, setTab] = useState<'files' | 'chat'>('files');
 
@@ -134,6 +136,13 @@ export default function CollectionDetailPage() {
             </button>
             <button className="btn btn-soft" onClick={() => setNoteEditing(true)}>
               <Icon id="i-doc" /> New note
+            </button>
+            <button
+              className="btn btn-soft"
+              onClick={() => setExporting(true)}
+              disabled={!col || col.files.length === 0}
+            >
+              <Icon id="i-book" /> Export to NotebookLM
             </button>
             <button className="btn btn-primary" onClick={() => setPicking(true)}>
               <Icon id="i-spark" /> Generate
@@ -340,6 +349,16 @@ export default function CollectionDetailPage() {
           collectionId={id}
           files={col.files}
           onClose={() => setGenFromType(null)}
+          onDone={() => void reload()}
+        />
+      )}
+
+      {exporting && col && (
+        <ExportToNotebookDrawer
+          collectionId={id}
+          collectionName={col.name}
+          files={col.files}
+          onClose={() => setExporting(false)}
           onDone={() => void reload()}
         />
       )}

@@ -57,6 +57,13 @@ import {
 import { getNotebookTags, setNotebookTags } from '../corpus/notebooks.js';
 import { assembleCollectionText } from '../corpus/collection-context.js';
 import {
+  planCollectionExport,
+  loadExportSource,
+  NOTEBOOKLM_SOURCE_LIMIT,
+} from '../corpus/export-notebook.js';
+import { parseSessionHeader } from '../lib/session-header.js';
+import { withClient } from '../lib/client-factory.js';
+import {
   getIndexStatus,
   listUnchunked,
   listTargets,
@@ -1778,6 +1785,133 @@ corpusRouter.post(
     res.status(201).json({ id: result.id, title, kind });
   }),
 );
+
+/**
+ * POST /api/corpus/collections/:id/export-notebook — create a *persistent*
+ * NotebookLM notebook from a collection, with one source per compatible
+ * artifact (vs. the merged-text generate path). Streams SSE progress and
+ * finishes with the new notebook's URL + a per-artifact summary.
+ *
+ * Body: { fileIds?: string[], name?: string }.
+ */
+function friendlyNblmError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/UNAUTHENTICATED|code 16|\b401\b|token refresh failed|HTTP 302|not authenticated/i.test(msg)) {
+    return (
+      'Your NotebookLM session has expired. Refresh it on the Session page ' +
+      `(or run \`npx notebooklm export-session\`), then try again. (${msg})`
+    );
+  }
+  return msg;
+}
+
+corpusRouter.post('/collections/:id/export-notebook', upload.none(), async (req, res, next) => {
+  const stream = openSseStream(res);
+  try {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      stream.error('corpus subsystem is disabled');
+      return;
+    }
+    const collectionId = req.params['id'];
+    if (!collectionId || !ULID_RE.test(collectionId)) {
+      stream.error('invalid collection id');
+      return;
+    }
+    const session = parseSessionHeader(req);
+    // Body arrives as a multipart `payload` JSON field (streamSse uses FormData);
+    // fall back to a plain JSON body for non-multipart callers.
+    const rawPayload = (req.body as Record<string, unknown> | undefined)?.['payload'];
+    const body: { fileIds?: unknown; name?: unknown } =
+      typeof rawPayload === 'string'
+        ? (JSON.parse(rawPayload) as { fileIds?: unknown; name?: unknown })
+        : ((req.body ?? {}) as { fileIds?: unknown; name?: unknown });
+    const fileIds = Array.isArray(body.fileIds)
+      ? body.fileIds.filter((x): x is string => typeof x === 'string')
+      : [];
+
+    stream.progress({ status: 'pending', message: 'Planning export…' });
+    const plan = await planCollectionExport(cfg, collectionId, fileIds);
+    if (plan.eligible.length === 0) {
+      stream.error(
+        'No NotebookLM-compatible sources in this collection (images are skipped, and text could not be extracted from the rest).',
+      );
+      return;
+    }
+    const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : plan.collectionName;
+    if (plan.capped) {
+      stream.progress({
+        status: 'pending',
+        message: `Collection exceeds the ${NOTEBOOKLM_SOURCE_LIMIT}-source limit — exporting the first ${NOTEBOOKLM_SOURCE_LIMIT}.`,
+      });
+    }
+
+    const added: { title: string; mode: string }[] = [];
+    const failed: { title: string; error: string }[] = [];
+    const skipped = [...plan.skipped];
+
+    const result = await withClient({ session, refreshFirst: true }, async (client) => {
+      stream.progress({ status: 'creating_notebook', message: 'Creating notebook…' });
+      const { notebookId } = await client.createNotebook();
+      try {
+        await client.renameNotebook(notebookId, name.slice(0, 200));
+      } catch {
+        /* non-fatal: a default-named notebook is still usable */
+      }
+
+      const total = plan.eligible.length;
+      let i = 0;
+      for (const entry of plan.eligible) {
+        i += 1;
+        stream.progress({ status: 'adding_source', message: `Adding ${i}/${total}: ${entry.title}` });
+        try {
+          const loaded = await loadExportSource(cfg, entry);
+          if (loaded.mode === 'file') {
+            try {
+              await client.addFileSource(notebookId, loaded.filePath);
+            } finally {
+              await loaded.cleanup();
+            }
+          } else {
+            await client.addTextSource(notebookId, loaded.title.slice(0, 200), loaded.text);
+          }
+          added.push({ title: entry.title, mode: entry.mode });
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          if (/no extractable text/i.test(m)) {
+            skipped.push({ id: entry.id, title: entry.title, reason: 'empty' });
+          } else {
+            failed.push({ title: entry.title, error: m });
+          }
+        }
+      }
+
+      // Best-effort: carry the collection's name + tags onto the notebook so it
+      // surfaces with the same library-side tags. Silently skip if the
+      // notebooks table hasn't been migrated.
+      try {
+        await setNotebookTags(cfg, notebookId, plan.tags, name);
+      } catch {
+        /* ignore */
+      }
+
+      return { notebookId };
+    });
+
+    stream.result({
+      notebookId: result.notebookId,
+      notebookUrl: `https://notebooklm.google.com/notebook/${result.notebookId}`,
+      name,
+      added,
+      failed,
+      skipped,
+      capped: plan.capped,
+    });
+  } catch (err) {
+    if (!stream.closed) stream.error(friendlyNblmError(err));
+    else next(err);
+  }
+});
 
 corpusRouter.post(
   '/chat',
