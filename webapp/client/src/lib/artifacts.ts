@@ -159,6 +159,21 @@ export function getRawText(id: string): Promise<{ content: string; mimeType: str
 export const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
+export const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+/**
+ * Serialization format the in-app Excel editor can round-trip losslessly for
+ * an artifact, or null if it isn't sheet-editable. Gated to .xlsx and .csv —
+ * SheetJS reads legacy .xls but can't write it back faithfully.
+ */
+export function sheetBookType(mimeType?: string | null): 'xlsx' | 'csv' | null {
+  const m = (mimeType ?? '').split(';')[0]!.trim().toLowerCase();
+  if (m === XLSX_MIME) return 'xlsx';
+  if (m === 'text/csv') return 'csv';
+  return null;
+}
+
 /** Same-origin URL for an artifact's raw bytes (fetchable, unlike the OCI PAR). */
 export function artifactFileUrl(id: string): string {
   return `/api/corpus/artifacts/${id}/file`;
@@ -173,6 +188,18 @@ export function updateArtifactDocx(
   const form = new FormData();
   form.append('file', new Blob([data], { type: DOCX_MIME }), filename);
   return apiFormData(`/api/corpus/artifacts/${id}/docx`, form, 'PUT');
+}
+
+/** Replace a spreadsheet artifact's blob with an edited .xlsx/.csv (re-extracts + re-embeds). */
+export function updateArtifactSheet(
+  id: string,
+  data: ArrayBuffer,
+  filename: string,
+  mime: string,
+): Promise<{ id: string; chunkCount: number; embedSkipped?: boolean }> {
+  const form = new FormData();
+  form.append('file', new Blob([data], { type: mime }), filename);
+  return apiFormData(`/api/corpus/artifacts/${id}/sheet`, form, 'PUT');
 }
 
 /** Replace a text artifact's content (re-embeds server-side). */

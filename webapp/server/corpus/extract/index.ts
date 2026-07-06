@@ -17,6 +17,7 @@ import { extractText } from './text.js';
 import { extractPdf } from './pdf.js';
 import { extractDocx } from './docx.js';
 import { extractHtml } from './html.js';
+import { extractSheet } from './sheet.js';
 
 /**
  * MIME prefixes that are known to be opaque binary blobs we can't turn
@@ -82,6 +83,15 @@ export function pickExtractor(
 
   if (mime.startsWith('text/html') || ext === 'html' || ext === 'htm') {
     return extractHtml;
+  }
+
+  if (
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mime === 'application/vnd.ms-excel' ||
+    ext === 'xlsx' ||
+    ext === 'xls'
+  ) {
+    return extractSheet;
   }
 
   // Binary container formats — return empty text. The row still lands in

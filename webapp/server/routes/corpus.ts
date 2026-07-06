@@ -1366,6 +1366,56 @@ corpusRouter.put(
 );
 
 /**
+ * PUT /api/corpus/artifacts/:id/sheet — multipart/form-data
+ *
+ * Replace a spreadsheet artifact's blob with an edited workbook (field: file,
+ * .xlsx or .csv) and re-index it (extract → chunk → embed). Optional `title`
+ * field renames. Mirrors the /docx route for the in-app Excel editor.
+ */
+corpusRouter.put(
+  '/artifacts/:id/sheet',
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    const cfg = await getCorpusConfig();
+    if (!cfg) {
+      res.status(503).json({ error: 'corpus subsystem is disabled' });
+      return;
+    }
+    const id = req.params['id'];
+    if (!id || !ULID_RE.test(id)) {
+      res.status(400).json({ error: 'invalid artifact id' });
+      return;
+    }
+    const file = (req as unknown as { file?: Express.Multer.File }).file;
+    if (!file) {
+      res.status(400).json({ error: 'missing "file" field' });
+      return;
+    }
+    const mime = file.mimetype?.split(';')[0]?.trim().toLowerCase();
+    const isXlsx =
+      mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    if (!isXlsx && mime !== 'text/csv') {
+      res.status(400).json({ error: 'file must be .xlsx or .csv' });
+      return;
+    }
+    // Cheap sanity check: an .xlsx is a ZIP container (PK\x03\x04).
+    if (isXlsx && (file.buffer.length < 4 || file.buffer.readUInt32LE(0) !== 0x04034b50)) {
+      res.status(400).json({ error: 'file is not a valid .xlsx (ZIP) workbook' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, string | undefined>;
+    const result = await updateArtifactBinary(cfg, id, {
+      buffer: file.buffer,
+      mimeType: isXlsx
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'text/csv',
+      title: body['title']?.trim() || undefined,
+    });
+    res.json(result);
+  }),
+);
+
+/**
  * PUT /api/corpus/artifacts/:id/content — replace a text artifact's content.
  * Body: { markdown: string, title?: string }. Re-embeds + overwrites the blob.
  */

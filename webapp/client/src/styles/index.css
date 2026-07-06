@@ -3404,6 +3404,58 @@ body[data-theme='dark'] .pick-tile .g-ic {
   cursor: default;
 }
 
+/* In-app Excel editor — react-spreadsheet self-injects default styles; we only
+   retint its CSS variables to our tokens so it follows the light/dark theme. */
+.excel-editor .Spreadsheet {
+  --background-color: var(--card);
+  --text-color: var(--ink);
+  --readonly-text-color: var(--muted);
+  --border-color: var(--line);
+  --outline-color: var(--accent);
+  --header-background-color: var(--card-2);
+  --elevation: var(--shadow);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+.excel-editor .Spreadsheet__header {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* Sheet tabs above the editor grid for multi-sheet workbooks. */
+.excel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.excel-tab {
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: var(--card-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.excel-tab:hover {
+  color: var(--ink);
+  background: var(--card);
+}
+.excel-tab.active {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
 @media (max-width: 1180px) {
   .grid {
     grid-template-columns: repeat(2, 1fr);

@@ -12,11 +12,13 @@ import { Icon } from './Icon';
 import MindmapView from './MindmapView';
 import { MarkdownView, sanitizeHtml } from '../lib/markdown';
 import { copyText } from '../lib/markdown-enhance';
-import { getView, DOCX_MIME, type ViewPayload } from '../lib/artifacts';
+import { getView, DOCX_MIME, sheetBookType, type ViewPayload } from '../lib/artifacts';
 
 // The Word editor pulls in ProseMirror + the OOXML engine — keep it out of
 // the main bundle and load it only when the user clicks Edit.
 const DocxEditorPane = React.lazy(() => import('./DocxEditorPane'));
+// Same for the Excel editor (react-spreadsheet + SheetJS).
+const ExcelEditorPane = React.lazy(() => import('./ExcelEditorPane'));
 
 interface Heading {
   id: string;
@@ -53,6 +55,8 @@ export default function Viewer({
   const [expanded, setExpanded] = useState(false);
   // Word artifacts can flip between the rendered preview and the live editor.
   const [editingDocx, setEditingDocx] = useState(false);
+  // Spreadsheet artifacts (.xlsx/.csv) get the same toggle into a grid editor.
+  const [editingSheet, setEditingSheet] = useState(false);
   // Set when an <audio>/<video> element can't decode the file (unsupported codec).
   const [mediaError, setMediaError] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -106,7 +110,10 @@ export default function Viewer({
   }
 
   const isDocx = view?.mimeType === DOCX_MIME;
-  const isDocView = !editingDocx && (view?.type === 'html' || view?.type === 'markdown');
+  // .xlsx/.csv only — the two formats SheetJS can round-trip losslessly.
+  const sheetType = view ? sheetBookType(view.mimeType) : null;
+  const editing = editingDocx || editingSheet;
+  const isDocView = !editing && (view?.type === 'html' || view?.type === 'markdown');
   const hasOutline = isDocView && headings.length > 0;
   // Indent nested headings relative to the document's shallowest level.
   const minLevel = headings.length ? Math.min(...headings.map((h) => h.level)) : 1;
@@ -164,6 +171,15 @@ export default function Viewer({
               onClick={() => setEditingDocx((e) => !e)}
             >
               <Icon id="i-doc" /> {editingDocx ? 'Preview' : 'Edit'}
+            </button>
+          )}
+          {sheetType && (
+            <button
+              className="btn btn-soft"
+              title={editingSheet ? 'Back to the read-only preview' : 'Edit this spreadsheet'}
+              onClick={() => setEditingSheet((e) => !e)}
+            >
+              <Icon id="i-table" /> {editingSheet ? 'Preview' : 'Edit'}
             </button>
           )}
           {isDocView && (
@@ -235,7 +251,7 @@ export default function Viewer({
             style={{
               flex: 1,
               minWidth: 0,
-              overflow: view?.type === 'mindmap' || editingDocx ? 'hidden' : 'auto',
+              overflow: view?.type === 'mindmap' || editing ? 'hidden' : 'auto',
               background: 'var(--card-2)',
             }}
           >
@@ -247,7 +263,7 @@ export default function Viewer({
             {view?.type === 'pdf' && (
               <iframe title={title} src={view.downloadUrl} style={{ width: '100%', height: '100%', border: 0 }} />
             )}
-            {view?.type === 'office' && (
+            {view?.type === 'office' && !editingSheet && (
               <iframe title={title} src={view.officeViewerUrl} style={{ width: '100%', height: '100%', border: 0 }} />
             )}
             {view?.type === 'image' && (
@@ -290,7 +306,12 @@ export default function Viewer({
                 <DocxEditorPane id={id} title={title} onSaved={loadView} />
               </Suspense>
             )}
-            {view?.type === 'html' && !editingDocx && (
+            {sheetType && editingSheet && (
+              <Suspense fallback={<div className="empty">Loading editor…</div>}>
+                <ExcelEditorPane id={id} title={title} bookType={sheetType} onSaved={loadView} />
+              </Suspense>
+            )}
+            {view?.type === 'html' && !editing && (
               <MarkdownView
                 ref={bodyRef}
                 html={sanitizeHtml(view.content)}
@@ -310,7 +331,7 @@ export default function Viewer({
             {view?.type === 'code' && (
               <CodeView content={view.content} language={view.language} />
             )}
-            {view?.type === 'text' && (
+            {view?.type === 'text' && !editingSheet && (
               <pre
                 style={{
                   padding: '24px 28px',
