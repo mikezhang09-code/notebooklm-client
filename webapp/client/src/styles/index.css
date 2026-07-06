@@ -3404,24 +3404,33 @@ body[data-theme='dark'] .pick-tile .g-ic {
   cursor: default;
 }
 
-/* In-app Excel editor — react-spreadsheet self-injects default styles; we only
-   retint its CSS variables to our tokens so it follows the light/dark theme. */
-.excel-editor .Spreadsheet {
-  --background-color: var(--card);
-  --text-color: var(--ink);
-  --readonly-text-color: var(--muted);
-  --border-color: var(--line);
-  --outline-color: var(--accent);
-  --header-background-color: var(--card-2);
-  --elevation: var(--shadow);
+/* In-app Excel editor — retint react-data-grid's CSS variables to our tokens
+   so the grid follows the light/dark theme. */
+.excel-editor .rdg {
+  --rdg-color: var(--ink);
+  --rdg-background-color: var(--card);
+  --rdg-header-background-color: var(--card-2);
+  --rdg-row-hover-background-color: var(--card-2);
+  --rdg-selection-color: var(--accent);
+  --rdg-border-color: var(--line);
+  --rdg-summary-border-color: var(--line);
+  --rdg-font-size: 12px;
+  block-size: 100%;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
+  border: none;
 }
-.excel-editor .Spreadsheet__header {
+.excel-editor .rdg [role='columnheader'] {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-size: 10px;
   color: var(--muted);
+}
+/* Row-number gutter column. */
+.excel-editor .rdg .rdg-rownum {
+  background: var(--card-2);
+  color: var(--muted);
+  text-align: center;
+  font-size: 10px;
 }
 
 /* Sheet tabs above the editor grid for multi-sheet workbooks. */

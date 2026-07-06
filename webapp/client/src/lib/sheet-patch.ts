@@ -10,18 +10,19 @@
  * for-byte identical.
  *
  * Mechanics: changed text is written as inline strings so sharedStrings.xml
- * never needs rewriting; overwriting a formula cell removes its <f>, and the
- * now-stale calcChain.xml part is dropped so Excel doesn't prompt to repair;
- * dimension / autoFilter / mergeCells ranges are clamped when rows are
- * removed. Known limit: overwriting the *master* cell of a shared-formula
- * group orphans the group's other cells (Excel repairs them to values).
+ * never needs rewriting; formula edits write a fresh <f> (with a recomputed
+ * cached <v> when the recalc engine could resolve it), and the now-stale
+ * calcChain.xml part is dropped so Excel doesn't prompt to repair; dimension
+ * / autoFilter / mergeCells ranges are clamped when rows are removed. Known
+ * limit: overwriting the *master* cell of a shared-formula group orphans the
+ * group's other cells (Excel repairs them to values).
  *
  * Browser-only (DOMParser / XMLSerializer). Heavy path — reached only from
  * the lazily-loaded editor.
  */
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
 import type { WorkSheet } from 'xlsx';
-import { coerce } from './sheet-edit';
+import { coerce, displayAoa, isFormula, sameVal, type CellVal } from './sheet-edit';
 
 type XlsxModule = typeof import('xlsx');
 
@@ -30,6 +31,8 @@ export interface CellWrite {
   r: number;
   c: number;
   text: string;
+  /** For a formula cell: the recomputed cached value to bake in (if known). */
+  value?: CellVal;
 }
 
 export interface SheetPatch {
@@ -74,24 +77,31 @@ export function diffSheetGrid(
   XLSX: XlsxModule,
   ws: WorkSheet,
   values: string[][],
+  computed?: Map<string, CellVal>,
 ): Omit<SheetPatch, 'name'> {
   const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1');
-  // Same options the editor used to build the grid, so old text compares
-  // exactly against what the user started from.
-  const oldAoa = XLSX.utils.sheet_to_json<(string | number)[]>(ws, {
-    header: 1,
-    defval: '',
-    blankrows: true,
-  });
+  // Same representation the editor showed (formulas as `=…`), so an untouched
+  // formula cell isn't seen as changed and flattened to text.
+  const oldAoa = displayAoa(XLSX, ws);
   const rows = Math.max(values.length, 1);
   const cols = Math.max(values.reduce((m, r) => Math.max(m, r.length), 1), 1);
   const writes: CellWrite[] = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const next = values[r]?.[c] ?? '';
-      const oldVal = oldAoa[r]?.[c];
-      const oldStr = oldVal == null ? '' : String(oldVal);
-      if (next !== oldStr) writes.push({ r: range.s.r + r, c: range.s.c + c, text: next });
+      const oldStr = oldAoa[r]?.[c] ?? '';
+      const R = range.s.r + r;
+      const C = range.s.c + c;
+      if (isFormula(next)) {
+        // Rewrite a formula cell when its text changed, or when its recomputed
+        // value differs from the cached one (an input it depends on changed).
+        const val = computed?.get(`${r},${c}`);
+        const oldCached = ws[XLSX.utils.encode_cell({ r: R, c: C })]?.v;
+        const valueChanged = val !== undefined && !sameVal(val, oldCached);
+        if (next !== oldStr || valueChanged) writes.push({ r: R, c: C, text: next, value: val });
+      } else if (next !== oldStr) {
+        writes.push({ r: R, c: C, text: next });
+      }
     }
   }
   return { writes, endRow: range.s.r + rows - 1, endCol: range.s.c + cols - 1 };
@@ -244,6 +254,25 @@ function patchSheetDoc(doc: Document, patch: SheetPatch): boolean {
       cellEl.removeAttribute('t');
       // A bare styled cell keeps its formatting; a fully plain empty is noise.
       if (!cellEl.getAttribute('s')) rowEl.removeChild(cellEl);
+      continue;
+    }
+    if (isFormula(w.text)) {
+      // Write a formula (no leading '='). Bake in the recomputed cached value
+      // when known so read-only viewers show it immediately; otherwise omit
+      // <v> and let Excel/Office recompute on open. Treat as a formula change
+      // so the stale calcChain is dropped.
+      removedFormula = true;
+      cellEl.removeAttribute('t');
+      const fEl = el('f');
+      fEl.textContent = w.text.slice(1);
+      cellEl.appendChild(fEl);
+      if (w.value !== undefined) {
+        if (typeof w.value === 'string') cellEl.setAttribute('t', 'str');
+        else if (typeof w.value === 'boolean') cellEl.setAttribute('t', 'b');
+        const vEl = el('v');
+        vEl.textContent = typeof w.value === 'boolean' ? (w.value ? '1' : '0') : String(w.value);
+        cellEl.appendChild(vEl);
+      }
       continue;
     }
     const v = coerce(w.text);
