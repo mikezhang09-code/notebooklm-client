@@ -18,6 +18,7 @@ import { extractPdf } from './pdf.js';
 import { extractDocx } from './docx.js';
 import { extractHtml } from './html.js';
 import { extractSheet } from './sheet.js';
+import { extractJson } from './json.js';
 
 /**
  * MIME prefixes that are known to be opaque binary blobs we can't turn
@@ -94,6 +95,10 @@ export function pickExtractor(
     return extractSheet;
   }
 
+  if (mime === 'application/json' || mime.endsWith('+json') || ext === 'json') {
+    return extractJson;
+  }
+
   // Binary container formats — return empty text. The row still lands in
   // the catalog with the blob in Object Storage; only the `chunks` and
   // text columns stay empty.
@@ -104,7 +109,7 @@ export function pickExtractor(
     return extractEmpty;
   }
 
-  // text/plain, text/markdown, application/json, application/javascript,
+  // text/plain, text/markdown, application/javascript,
   // application/xml, etc. — safe to UTF-8 decode.
   return extractText;
 }

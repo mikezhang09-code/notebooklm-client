@@ -15,7 +15,7 @@ import { getObjectBuffer } from './oci/storage.js';
 import { embedTexts } from './oci/genai.js';
 import { geminiExtractText, isOcrableMime } from './oci/gemini-ocr.js';
 import { extract } from './extract/index.js';
-import { chunkText } from './chunk.js';
+import { chunkArtifactText } from './chunk.js';
 import { newId } from './ulid.js';
 
 /** A 0-chunk artifact row (or an explicitly targeted one). */
@@ -182,7 +182,9 @@ export async function reembedOne(
   }
 
   const clean = text.trim();
-  const chunks = clean ? chunkText(text) : [];
+  const chunks = clean
+    ? chunkArtifactText(text, { kind: row.KIND, title: row.TITLE })
+    : [];
   if (chunks.length === 0) return { status: 'no-text', chars: clean.length };
   if (!apply) return { status: 'would-index', chunks: chunks.length, chars: clean.length };
 

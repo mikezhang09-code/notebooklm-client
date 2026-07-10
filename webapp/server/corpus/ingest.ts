@@ -17,7 +17,7 @@ import { withConnection } from './oci/db.js';
 import { putObject } from './oci/storage.js';
 import { embedTexts } from './oci/genai.js';
 import { extract } from './extract/index.js';
-import { chunkText } from './chunk.js';
+import { chunkText, chunkArtifactText } from './chunk.js';
 import { newId } from './ulid.js';
 import { cleanTags, inheritedTagsForIngest } from './tags.js';
 
@@ -210,7 +210,7 @@ export async function ingestArtifactWith(
 
   // 1) Extract text (synchronously — cheap for most inputs, <100ms even for PDFs).
   const rawText = await extract(input.buffer, input.mimeType, input.filename);
-  const chunks = chunkText(rawText);
+  const chunks = chunkArtifactText(rawText, { kind: input.kind, title: input.title });
 
   // 2) Upload to Object Storage + embed chunks in parallel.
   //    (Both are network-bound; overlapping saves ~1-2s per ingest.)
@@ -739,8 +739,13 @@ export async function updateArtifactBinary(
   input: { buffer: Buffer; mimeType?: string; title?: string },
 ): Promise<{ id: string; chunkCount: number; embedSkipped?: boolean; embedError?: string }> {
   const row = await withConnection(cfg, async (conn) => {
-    const r = await conn.execute<{ OBJECT_NAME: string; MIME_TYPE: string | null }>(
-      `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+    const r = await conn.execute<{
+      OBJECT_NAME: string;
+      MIME_TYPE: string | null;
+      KIND: string;
+      TITLE: string;
+    }>(
+      `SELECT object_name, mime_type, kind, title FROM artifacts WHERE id = :id`,
       { id },
       { outFormat: oracledb.OUT_FORMAT_OBJECT },
     );
@@ -751,7 +756,10 @@ export async function updateArtifactBinary(
   const objectName = row.OBJECT_NAME;
   const mime = input.mimeType ?? row.MIME_TYPE ?? 'application/octet-stream';
   const text = await extract(input.buffer, mime, objectName);
-  const chunks = chunkText(text);
+  const chunks = chunkArtifactText(text, {
+    kind: row.KIND,
+    title: input.title ?? row.TITLE,
+  });
 
   const [, embed] = await Promise.all([
     putObject(cfg, objectName, input.buffer, mime, input.buffer.length),

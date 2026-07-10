@@ -120,6 +120,57 @@ export function chunkText(text: string, opts: ChunkOptions = {}): Chunk[] {
   return chunks;
 }
 
+/** A cell is numeric-ish if it's a number, "801+", "1201-1400", "7=", "51.2%" … */
+const NUMERIC_CELL = /^-?\d+(\.\d+)?([-–=+%]\d*(\.\d+)?)?[=+%]?$/;
+
+/**
+ * Detect the leading header lines of CSV-ish tabular text: consume the first
+ * few lines until one looks like a data row (≥ half of its non-empty cells
+ * numeric). Real-world ranking sheets carry 2–3 header lines (a title row, a
+ * year row like ",2026,2025,Institution,…", then the column names) before the
+ * data starts. Returns null when the very first line already looks like data.
+ */
+export function detectTableHeader(text: string): string | null {
+  const lines = text.split('\n', 5).slice(0, 4);
+  const headers: string[] = [];
+  for (const line of lines) {
+    const cells = line
+      .split(',')
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
+    const numeric = cells.filter((c) => NUMERIC_CELL.test(c));
+    if (cells.length >= 2 && numeric.length / cells.length >= 0.5) break; // data row
+    headers.push(line.length > 200 ? `${line.slice(0, 200)}…` : line);
+  }
+  const joined = headers.join('\n').trim();
+  return joined.length > 0 ? joined.slice(0, 600) : null;
+}
+
+/**
+ * Chunk an artifact's text, prefixing every chunk of tabular data
+ * (kind='data_table') with the artifact title and the table's header lines.
+ * A mid-file slice of a ranking table is otherwise anonymous rows — the
+ * title tells the embedding (and later the chat model) *which* table the
+ * rows belong to, and the header is what makes a row like "38,38,34,
+ * Columbia University,…" interpretable (rank vs previous-year rank).
+ * `charStart`/`charEnd` keep referring to the un-prefixed source text.
+ */
+export function chunkArtifactText(
+  text: string,
+  meta: { kind?: string; title?: string },
+  opts: ChunkOptions = {},
+): Chunk[] {
+  const chunks = chunkText(text, opts);
+  const title = meta.title?.trim();
+  if (meta.kind !== 'data_table' || !title) return chunks;
+  const header = detectTableHeader(text);
+  const prefix = header && !header.includes(title) ? `${title}\n${header}` : (header ?? title);
+  return chunks.map((c) => {
+    const prefixed = `${prefix}\n${c.text}`;
+    return { ...c, text: prefixed, tokenEstimate: estimateTokens(prefixed) };
+  });
+}
+
 /** Crude byte-length-based token estimate; fine for logging/budgeting. */
 export function estimateTokens(text: string): number {
   // Favour the CJK-heavy side (2 chars/token) because our embed model is

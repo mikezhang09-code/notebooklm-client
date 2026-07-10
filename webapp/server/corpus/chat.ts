@@ -28,6 +28,25 @@ const WHOLE_DOC_CHAR_CAP = 48000;
 /** Max chunks pulled per artifact when assembling a broad scope overview. */
 const OVERVIEW_SNIPPETS_PER_DOC = 3;
 
+/**
+ * Structured-table injection for collection chats.
+ *
+ * Chunk-level semantic retrieval is systematically bad at lookup / top-N /
+ * aggregation questions over homogeneous tabular data — every chunk of a
+ * ranking table embeds almost identically, so the snippets that win the kNN
+ * are arbitrary rows and the model rightly answers "not in the provided
+ * documents". Whole tables are cheap in tokens (post-extraction CSV) and
+ * precise, so a collection-scoped chat feeds every small `data_table`
+ * artifact to the model in full instead of through snippets.
+ */
+/** Raw blobs above this size are skipped without extraction (their text
+ *  would blow the per-doc cap anyway). */
+const STRUCTURED_MAX_RAW_BYTES = 150_000;
+/** A single table's extracted text must fit here to be fed whole. */
+const STRUCTURED_DOC_CHAR_CAP = WHOLE_DOC_CHAR_CAP;
+/** Combined budget across all injected tables per chat turn. */
+const STRUCTURED_TOTAL_CHAR_BUDGET = 120_000;
+
 /** Tolerant JSON parse for tags/metadata columns (CLOB string or object). */
 function parseJson<T>(v: unknown, fallback: T): T {
   if (v == null) return fallback;
@@ -95,6 +114,54 @@ async function loadWholeDocument(
   }
 
   return { text, artifact: rowToArtifact(row) };
+}
+
+/**
+ * Load every small structured (data_table) artifact of a collection in full:
+ * fetch blob → extract → keep those whose text fits the caps. Smallest-first
+ * so the budget covers as many tables as possible. Runs on every collection
+ * chat turn — two Object Storage GETs + text extraction is ~100–300ms, cheap
+ * next to the model call.
+ */
+async function loadCollectionStructuredDocs(
+  cfg: CorpusConfig,
+  collectionId: string,
+): Promise<Array<{ artifact: SearchHit['artifact']; text: string }>> {
+  const rows = await withConnection(cfg, async (conn) => {
+    const r = await conn.execute<Record<string, unknown>>(
+      `SELECT id, kind, origin, title, notebook_id, artifact_id, bucket,
+              object_name, mime_type, size_bytes, tags, metadata, created_at
+         FROM artifacts
+        WHERE collection_id = :c AND kind = 'data_table' AND size_bytes <= :maxsz
+        ORDER BY size_bytes ASC
+        FETCH FIRST 8 ROWS ONLY`,
+      { c: collectionId, maxsz: STRUCTURED_MAX_RAW_BYTES },
+      { outFormat: oracledb.OUT_FORMAT_OBJECT },
+    );
+    return r.rows ?? [];
+  });
+
+  const docs: Array<{ artifact: SearchHit['artifact']; text: string }> = [];
+  let budget = STRUCTURED_TOTAL_CHAR_BUDGET;
+  for (const row of rows) {
+    if (budget <= 0) break;
+    try {
+      const objectName = String(row['OBJECT_NAME']);
+      const buffer = await getObjectBuffer(cfg, objectName);
+      const text = (
+        await extract(buffer, (row['MIME_TYPE'] as string | null) ?? undefined, objectName)
+      ).trim();
+      if (!text || text.length > STRUCTURED_DOC_CHAR_CAP || text.length > budget) continue;
+      budget -= text.length;
+      docs.push({ artifact: rowToArtifact(row), text });
+    } catch (err) {
+      console.warn(
+        `[corpus.chat] structured-doc load failed for ${String(row['ID'])}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+  return docs;
 }
 
 /**
@@ -293,12 +360,26 @@ function clampInt(value: number | undefined, min: number, max: number, fallback:
   return Math.min(Math.max(Math.floor(value as number), min), max);
 }
 
-/** Build the Cohere/Gemini "documents" array from resolved chat sources. */
+/**
+ * Build the Cohere/Gemini "documents" array from resolved chat sources.
+ * Sources listed in `wholeDocTexts` (artifact id → full text) contribute one
+ * document carrying the complete text instead of their per-chunk snippets.
+ */
 function buildDocuments(
   sources: ChatSource[],
+  wholeDocTexts?: Map<string, string>,
 ): Array<{ id: string; title: string; snippet: string }> {
   const documents: Array<{ id: string; title: string; snippet: string }> = [];
   for (const src of sources) {
+    const whole = wholeDocTexts?.get(src.artifact.id);
+    if (whole != null) {
+      documents.push({
+        id: `doc_${src.index}_0`,
+        title: `[${src.index}] ${src.artifact.title} · full table`,
+        snippet: whole,
+      });
+      continue;
+    }
     for (const snip of src.snippets) {
       documents.push({
         id: `doc_${src.index}_${snip.ordinal}`,
@@ -308,6 +389,18 @@ function buildDocuments(
     }
   }
   return documents;
+}
+
+/** UI-facing preview snippet for a source whose full text was fed to the model. */
+function wholeDocPreviewSnippet(text: string): SearchSnippet {
+  return {
+    chunkId: 'whole-document',
+    ordinal: 0,
+    distance: 0,
+    text: text.slice(0, 1200),
+    charStart: 0,
+    charEnd: text.length,
+  };
 }
 
 interface PreparedChat {
@@ -337,9 +430,19 @@ async function prepareChat(cfg: CorpusConfig, opts: ChatOptions): Promise<Prepar
   const maxDistance = opts.maxDistance ?? (singleDoc ? 2 : 0.75);
 
   // ── 1. Retrieve ─────────────────────────────────────────────────────
+  // Conversational follow-ups ("what was its 2025 rank?") rarely repeat the
+  // entities they refer to, so embedding the bare question retrieves junk.
+  // Fold the last couple of user turns into the retrieval query — the model
+  // itself still only gets the real question.
+  const priorUserTurns = (opts.history ?? [])
+    .filter((t) => t.role === 'user' && t.content.trim().length > 0)
+    .slice(-2)
+    .map((t) => t.content.trim().slice(0, 300));
+  const retrievalQuery = [...priorUserTurns, opts.question.trim()].join('\n');
+
   const t0 = Date.now();
   const search = await searchCorpus(cfg, {
-    query: opts.question.trim(),
+    query: retrievalQuery,
     kind: opts.kind,
     kinds: opts.kinds,
     notebookId: opts.notebookId,
@@ -361,6 +464,37 @@ async function prepareChat(cfg: CorpusConfig, opts: ChatOptions): Promise<Prepar
   }));
   let documents = buildDocuments(sources);
   let overview = false;
+
+  // Structured-table injection (collection scope): feed small data_table files
+  // whole instead of through kNN snippets — see loadCollectionStructuredDocs.
+  // Skipped when the request's kind filter excludes data_table.
+  const kindFilter = opts.kind ? [opts.kind] : opts.kinds;
+  if (
+    opts.collectionId &&
+    !singleDoc &&
+    (!kindFilter || kindFilter.length === 0 || kindFilter.includes('data_table'))
+  ) {
+    const structured = await loadCollectionStructuredDocs(cfg, opts.collectionId);
+    if (structured.length > 0) {
+      const wholeDocTexts = new Map<string, string>();
+      for (const doc of structured) {
+        wholeDocTexts.set(doc.artifact.id, doc.text);
+        const existing = sources.find((s) => s.artifact.id === doc.artifact.id);
+        if (existing) {
+          existing.snippets = [wholeDocPreviewSnippet(doc.text)];
+        } else {
+          sources.push({
+            index: 0, // reassigned below
+            artifact: doc.artifact,
+            snippets: [wholeDocPreviewSnippet(doc.text)],
+            bestDistance: 1,
+          });
+        }
+      }
+      sources.forEach((s, i) => (s.index = i + 1));
+      documents = buildDocuments(sources, wholeDocTexts);
+    }
+  }
 
   // Whole-document fallback: a single-document chat whose target has no indexed
   // chunks (un-embedded upload, or one that fell outside retrieval) is still
