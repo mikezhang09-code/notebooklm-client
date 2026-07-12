@@ -120,6 +120,35 @@ describe('diffWorkbook', () => {
   });
 });
 
+describe('sparse sheets', () => {
+  it('parses a sheet with a blank row inside its used range', async () => {
+    // A blank interior row makes exceljs's eachRow (includeEmpty: false) skip
+    // it, leaving the row array sparse — this used to collapse the column
+    // count to NaN and render every cell blank.
+    const buf = await buildXlsx({
+      sheets: [
+        {
+          name: 'Gap',
+          cells: [
+            [{ v: 'header', style: { bold: true } }, { v: 1 }],
+            [null, null],
+            [{ v: 'after-gap' }, { v: 2 }],
+          ],
+          merges: [],
+          colWidths: [null, null],
+          rowHeights: [null, null, null],
+        },
+      ],
+    });
+    const back = await parseXlsx(buf);
+    const s = back.sheets[0]!;
+    expect(s.cells[0]?.[0]?.v).toBe('header');
+    expect(s.cells[0]?.[1]?.v).toBe(1);
+    expect(s.cells[2]?.[0]?.v).toBe('after-gap');
+    expect(s.cells[2]?.[1]?.v).toBe(2);
+  });
+});
+
 describe('parseRange', () => {
   it('parses single cells and ranges', () => {
     expect(parseRange('B2')).toEqual({ startRow: 1, startCol: 1, endRow: 1, endCol: 1 });
