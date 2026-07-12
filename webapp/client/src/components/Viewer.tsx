@@ -17,8 +17,12 @@ import { getView, DOCX_MIME, sheetBookType, type ViewPayload } from '../lib/arti
 // The Word editor pulls in ProseMirror + the OOXML engine — keep it out of
 // the main bundle and load it only when the user clicks Edit.
 const DocxEditorPane = React.lazy(() => import('./DocxEditorPane'));
-// Same for the Excel editor (react-spreadsheet + SheetJS).
+// CSV grid editor (react-data-grid + SheetJS).
 const ExcelEditorPane = React.lazy(() => import('./ExcelEditorPane'));
+// Styled .xlsx preview (exceljs) — replaces the MS Office Online embed.
+const ExcelViewerPane = React.lazy(() => import('./ExcelViewerPane'));
+// Full .xlsx editor (Univer) — by far the heaviest chunk.
+const UniverSheetPane = React.lazy(() => import('./UniverSheetPane'));
 
 interface Heading {
   id: string;
@@ -263,7 +267,12 @@ export default function Viewer({
             {view?.type === 'pdf' && (
               <iframe title={title} src={view.downloadUrl} style={{ width: '100%', height: '100%', border: 0 }} />
             )}
-            {view?.type === 'office' && !editingSheet && (
+            {view?.type === 'office' && !editingSheet && sheetType === 'xlsx' && (
+              <Suspense fallback={<div className="empty">Rendering spreadsheet…</div>}>
+                <ExcelViewerPane id={id} />
+              </Suspense>
+            )}
+            {view?.type === 'office' && !editingSheet && sheetType !== 'xlsx' && (
               <iframe title={title} src={view.officeViewerUrl} style={{ width: '100%', height: '100%', border: 0 }} />
             )}
             {view?.type === 'image' && (
@@ -306,7 +315,12 @@ export default function Viewer({
                 <DocxEditorPane id={id} title={title} onSaved={loadView} />
               </Suspense>
             )}
-            {sheetType && editingSheet && (
+            {sheetType === 'xlsx' && editingSheet && (
+              <Suspense fallback={<div className="empty">Loading editor…</div>}>
+                <UniverSheetPane id={id} title={title} onSaved={loadView} />
+              </Suspense>
+            )}
+            {sheetType === 'csv' && editingSheet && (
               <Suspense fallback={<div className="empty">Loading editor…</div>}>
                 <ExcelEditorPane id={id} title={title} bookType={sheetType} onSaved={loadView} />
               </Suspense>
