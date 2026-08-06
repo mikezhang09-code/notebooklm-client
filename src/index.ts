@@ -136,4 +136,4 @@ export { REPORT_TEMPLATES } from './artifact-payloads.js';
 
 export { SessionError, BrowserError, UserDisplayableError } from './errors.js';
 export { parseEnvelopes, stripSafetyPrefix } from './boq-parser.js';
-export { ARTIFACT_TYPE } from './rpc-ids.js';
+export { ARTIFACT_TYPE, NB_HOST, NB_ORIGIN, NB_URLS, notebookUrl } from './rpc-ids.js';

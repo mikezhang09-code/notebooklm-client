@@ -12,6 +12,7 @@ import { platform } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionError } from './errors.js';
+import { NB_ORIGIN } from './rpc-ids.js';
 import type { Transport, TransportRequest } from './transport.js';
 import type { NotebookRpcSession } from './types.js';
 
@@ -173,8 +174,8 @@ export class CurlTransport implements Transport {
     return {
       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       'User-Agent': ua,
-      'Origin': 'https://notebooklm.google.com',
-      'Referer': 'https://notebooklm.google.com/',
+      'Origin': NB_ORIGIN,
+      'Referer': `${NB_ORIGIN}/`,
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9',
       'Sec-Ch-Ua': '"Chromium";v="131", "Not_A Brand";v="24"',

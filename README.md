@@ -6,7 +6,7 @@
 
 <a id="english"></a>
 
-Standalone CLI, library, **and local Web GUI** for Google's [NotebookLM](https://notebooklm.google.com/) — generate audio podcasts, reports, slides, quizzes, videos, infographics, data tables, flashcards, analyze content, manage notebooks, and chat.
+Standalone CLI, library, **and local Web GUI** for Google's [NotebookLM](https://notebook.google.com/) — generate audio podcasts, reports, slides, quizzes, videos, infographics, data tables, flashcards, analyze content, manage notebooks, and chat.
 
 > **New in v0.7.0** — **Audio / video transcription**: every audio podcast and video artifact in the research corpus now gets auto-transcribed via **OCI Speech (Whisper)** in the background, then chunked + embedded like any other text. Search and chat seamlessly cover spoken content (Chinese, English, 50+ languages via Whisper auto-detect). Status surfaces inline in the Library with a `⏳ → ✓` badge per row and a manual retry button. **5 free transcription hours / month per tenancy** covers normal personal use at zero cost.
 >
@@ -415,7 +415,7 @@ MIT
 
 # notebooklm-client（中文文档）
 
-Google [NotebookLM](https://notebooklm.google.com/) 的独立 CLI、编程库 **和本地 Web GUI** —— 生成音频播客、报告、幻灯片、测验、视频、信息图、数据表、闪卡，分析内容、管理笔记本、对话。
+Google [NotebookLM](https://notebook.google.com/) 的独立 CLI、编程库 **和本地 Web GUI** —— 生成音频播客、报告、幻灯片、测验、视频、信息图、数据表、闪卡，分析内容、管理笔记本、对话。
 
 > **v0.7.0 新增** —— **音视频自动转写**：研究语料库中的每个音频播客和视频产物现在都会通过 **OCI Speech（Whisper 模型）** 在后台自动转写，再按文本流程切块 + 嵌入。语义搜索和对话天然覆盖语音内容（中文、英文等 50+ 种语言，Whisper 自动检测）。Library 页每行带 `⏳ → ✓` 状态徽标和手动重试按钮。**每个租户每月 5 小时免费转写额度**通常足以覆盖个人使用，零成本。
 >

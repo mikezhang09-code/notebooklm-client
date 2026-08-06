@@ -137,7 +137,7 @@ export default function NotebookLMPage() {
                   </button>
                   <a
                     className="act"
-                    href={`https://notebooklm.google.com/notebook/${nb.id}`}
+                    href={`https://notebook.google.com/notebook/${nb.id}`}
                     target="_blank"
                     rel="noreferrer"
                     onClick={(e) => e.stopPropagation()}

@@ -222,7 +222,7 @@ describe('session-store', () => {
     });
 
     it('should pass -x to curl when proxy is provided', async () => {
-      const fakeHtml = `"SNlM0e":"token-proxy","cfb2h":"bl-proxy","FdrFJe":"fsid-proxy"`;
+      const fakeHtml = `"SNlM0e":"token-proxy","cfb2h":"boq_labs-tailwind-frontend_20260803.11_p0","FdrFJe":"fsid-proxy"`;
       const calls = captureCurlCalls(curlOutput({ status: 200, body: fakeHtml }));
 
       const refreshed = await refreshTokens(
@@ -240,7 +240,7 @@ describe('session-store', () => {
     });
 
     it('should not pass -x to curl when no proxy', async () => {
-      const fakeHtml = `"SNlM0e":"token-noproxy","cfb2h":"bl","FdrFJe":"fsid"`;
+      const fakeHtml = `"SNlM0e":"token-noproxy","cfb2h":"boq_labs-tailwind-frontend_20260803.11_p0","FdrFJe":"fsid"`;
       const calls = captureCurlCalls(curlOutput({ status: 200, body: fakeHtml }));
 
       await refreshTokens(makeSession(), join(tmpDir, 'noproxy.json'));
@@ -250,7 +250,7 @@ describe('session-store', () => {
     });
 
     it('should merge Set-Cookie headers with existing cookies', async () => {
-      const fakeHtml = `"SNlM0e":"token123","cfb2h":"bl-val","FdrFJe":"fsid-val"`;
+      const fakeHtml = `"SNlM0e":"token123","cfb2h":"boq_labs-tailwind-frontend_20260803.11_p0","FdrFJe":"fsid-val"`;
       setCurlResponse(curlOutput({
         status: 200,
         setCookies: [
@@ -267,6 +267,35 @@ describe('session-store', () => {
       expect(refreshed.cookies).toContain('HSID=keep-me');
       expect(refreshed.cookies).toContain('NEW_COOKIE=xyz');
       expect(refreshed.cookies).not.toContain('old-sid');
+    });
+
+    it('should reject a token scraped from the sign-in page', async () => {
+      // Expired cookies make the dashboard redirect to accounts.google.com, whose
+      // sign-in UI also carries an SNlM0e. Scraping it would overwrite a good
+      // session with a token that 401s on every RPC.
+      setCurlResponse(curlOutput({
+        status: 200,
+        body: `"SNlM0e":"login-page-token","cfb2h":"boq_identityfrontendauthuiserver_20260730.03_p0","FdrFJe":"1"`,
+      }));
+
+      await expect(refreshTokens(makeSession(), join(tmpDir, 'login.json')))
+        .rejects.toThrow(/not signed in/i);
+    });
+
+    it('should read the final response when curl follows redirects', async () => {
+      // With -L, curl dumps one header block per hop; the 302s must not be
+      // mistaken for the final status.
+      const hop = 'HTTP/2 302\r\nlocation: https://accounts.google.com/ServiceLogin\r\n\r\n';
+      setCurlResponse(hop + curlOutput({
+        status: 200,
+        setCookies: ['NEW_COOKIE=xyz; path=/'],
+        body: `"SNlM0e":"final-token","cfb2h":"boq_labs-tailwind-frontend_20260803.11_p0","FdrFJe":"fsid-x"`,
+      }));
+
+      const refreshed = await refreshTokens(makeSession(), join(tmpDir, 'redirect.json'));
+
+      expect(refreshed.at).toBe('final-token');
+      expect(refreshed.cookies).toContain('NEW_COOKIE=xyz');
     });
   });
 });

@@ -61,6 +61,7 @@ import {
   loadExportSource,
   NOTEBOOKLM_SOURCE_LIMIT,
 } from '../corpus/export-notebook.js';
+import { notebookUrl } from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
 import {
@@ -1950,7 +1951,7 @@ corpusRouter.post('/collections/:id/export-notebook', upload.none(), async (req,
 
     stream.result({
       notebookId: result.notebookId,
-      notebookUrl: `https://notebooklm.google.com/notebook/${result.notebookId}`,
+      notebookUrl: notebookUrl(result.notebookId),
       name,
       added,
       failed,

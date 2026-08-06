@@ -8,7 +8,7 @@ import { type Browser, type Page } from 'puppeteer-core';
 import { launchBrowser, getDefaultProfileDir } from './browser.js';
 import { SessionError } from './errors.js';
 import { withRefreshGuard } from './utils/refresh-guard.js';
-import { NB_URLS } from './rpc-ids.js';
+import { NB_URLS, NB_APP_HOSTS, isNotebookHost } from './rpc-ids.js';
 import type { Transport, TransportRequest } from './transport.js';
 import type { NotebookRpcSession, BrowserLaunchOptions } from './types.js';
 
@@ -35,15 +35,18 @@ export class BrowserTransport implements Transport {
       console.error('NotebookLM: First run — please log in to your Google account.');
     }
 
-    // Wait for user to land on notebooklm.google.com (may go through Google login first).
+    // Wait for user to land on the app (may go through Google login first).
+    // The host is notebook.google.com since the "Gemini Notebook" rebrand; the
+    // legacy notebooklm.google.com host is still accepted in case it comes back.
     // After login redirect, WIZ_global_data may not be populated until a clean page load.
     const gotTokens = await this.page.waitForFunction(
-      () => {
-        if (!location.hostname.includes('notebooklm.google.com')) return false;
+      (hosts: readonly string[]) => {
+        if (!hosts.includes(location.hostname)) return false;
         const bl = window.WIZ_global_data?.cfb2h ?? '';
         return !!window.WIZ_global_data?.SNlM0e && bl.includes('labs-tailwind');
       },
       { timeout: 180000, polling: 2000 },
+      NB_APP_HOSTS,
     ).then(() => true).catch(() => false);
 
     if (!gotTokens) {
@@ -52,7 +55,7 @@ export class BrowserTransport implements Transport {
       const currentUrl = this.page.url();
       console.error(`NotebookLM: Tokens not found at ${currentUrl}, reloading...`);
 
-      if (!currentUrl.includes('notebooklm.google.com')) {
+      if (!isNotebookHost(currentUrl)) {
         await this.page.goto(NB_URLS.DASHBOARD, { waitUntil: 'networkidle2', timeout: 60000 });
       } else {
         await this.page.reload({ waitUntil: 'networkidle2', timeout: 60000 });

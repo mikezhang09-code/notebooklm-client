@@ -30,7 +30,7 @@ function makeSession(overrides: Partial<NotebookRpcSession> = {}): NotebookRpcSe
 
 function makeRequest(): TransportRequest {
   return {
-    url: 'https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute',
+    url: 'https://notebook.google.com/_/LabsTailwindUi/data/batchexecute',
     queryParams: {
       rpcids: 'CCqFvf',
       'source-path': '/',
@@ -108,7 +108,7 @@ describe('HttpTransport', () => {
     const headers = callOpts.headers as Record<string, string>;
 
     expect(headers['Cookie']).toBe('SID=abc; HSID=def; SSID=ghi');
-    expect(headers['Origin']).toBe('https://notebooklm.google.com');
+    expect(headers['Origin']).toBe('https://notebook.google.com');
     expect(headers['Sec-Ch-Ua']).toContain('Chromium');
     expect(headers['Sec-Fetch-Mode']).toBe('cors');
     expect(headers['X-Same-Domain']).toBe('1');

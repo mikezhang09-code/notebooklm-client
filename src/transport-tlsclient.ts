@@ -9,6 +9,7 @@
  */
 
 import { SessionError } from './errors.js';
+import { NB_ORIGIN } from './rpc-ids.js';
 import type { Transport, TransportRequest } from './transport.js';
 import type { NotebookRpcSession } from './types.js';
 
@@ -213,8 +214,8 @@ export class TlsClientTransport implements Transport {
       'Content-Length': String(contentLength),
       'User-Agent': ua,
       'Cookie': this.session.cookies,
-      'Origin': 'https://notebooklm.google.com',
-      'Referer': 'https://notebooklm.google.com/',
+      'Origin': NB_ORIGIN,
+      'Referer': `${NB_ORIGIN}/`,
       'Accept': '*/*',
       'Accept-Language': 'en-US,en;q=0.9',
       'Sec-Ch-Ua': '"Chromium";v="131", "Not_A Brand";v="24"',

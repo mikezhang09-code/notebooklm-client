@@ -15,6 +15,7 @@ import type {
   WorkflowProgress,
   ArtifactGenerateOptions,
 } from 'notebooklm-client';
+import { notebookUrl } from 'notebooklm-client';
 import { parseSessionHeader } from '../lib/session-header.js';
 import { withClient } from '../lib/client-factory.js';
 import { openSseStream } from '../lib/sse.js';
@@ -269,7 +270,7 @@ async function runWorkflow(
       onProgress({ status: 'completed', message: 'Mind map complete!' });
       return {
         downloadPaths: [treePath],
-        meta: { noteId: r.noteId, title: r.title, notebookUrl: `https://notebooklm.google.com/notebook/${notebookId}` },
+        meta: { noteId: r.noteId, title: r.title, notebookUrl: notebookUrl(notebookId) },
       };
     }
   }

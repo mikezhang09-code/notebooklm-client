@@ -9,7 +9,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from 'puppeteer-core';
-import { NB_RPC, NB_URLS } from './rpc-ids.js';
+import { NB_RPC, NB_URLS, NB_ORIGIN, isNotebookHost } from './rpc-ids.js';
 import { parseEnvelopes } from './boq-parser.js';
 import { humanSleep } from './utils/humanize.js';
 import type { NotebookRpcSession } from './types.js';
@@ -119,7 +119,7 @@ export async function downloadFileHttp(
       '-b', cookiePath,
       '-c', cookiePath,
       '-H', `User-Agent: ${session.userAgent}`,
-      '-H', 'Referer: https://notebooklm.google.com/',
+      '-H', `Referer: ${NB_ORIGIN}/`,
       '--max-redirs', '20',
     ];
     if (proxy) args.push('-x', proxy);
@@ -269,7 +269,7 @@ async function downloadFileUndici(
         dispatcher,
         headers: {
           'User-Agent': session.userAgent,
-          'Referer': 'https://notebooklm.google.com/',
+          'Referer': `${NB_ORIGIN}/`,
           'Accept': '*/*',
           'Cookie': buildCookieHeader(currentUrl),
         },
@@ -340,7 +340,7 @@ export async function downloadAudioBrowser(
   outputDir: string,
 ): Promise<string> {
   const currentUrl = page.url();
-  if (!currentUrl.includes('notebooklm.google.com')) {
+  if (!isNotebookHost(currentUrl)) {
     await page.goto(NB_URLS.DASHBOARD, { waitUntil: 'networkidle2', timeout: 30000 });
   }
 

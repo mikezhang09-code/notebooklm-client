@@ -75,13 +75,48 @@ export const ARTIFACT_TYPE = {
   DATA_TABLE: 9,
 } as const;
 
+/**
+ * Google rebranded NotebookLM to "Gemini Notebook" and moved the app to
+ * notebook.google.com. notebooklm.google.com now 302s to the new host and no
+ * longer serves authenticated batchexecute (it answers 401), so every request
+ * — and the Origin/Referer we claim — must target the new host.
+ *
+ * The internal BOQ app is unchanged (`boq_labs-tailwind-frontend`), so RPC ids
+ * and the `_/LabsTailwindUi/` paths still apply.
+ */
+export const NB_HOST = 'notebook.google.com';
+
+/** Pre-rebrand host. Still accepted when checking "are we on the app?". */
+export const NB_LEGACY_HOST = 'notebooklm.google.com';
+
+export const NB_ORIGIN = `https://${NB_HOST}`;
+
+/** Hostnames that count as the NotebookLM/Gemini Notebook app. */
+export const NB_APP_HOSTS: readonly string[] = [NB_HOST, NB_LEGACY_HOST];
+
+/** True when a URL (or bare hostname) points at the app, old host or new. */
+export function isNotebookHost(urlOrHost: string): boolean {
+  let host = urlOrHost;
+  try {
+    host = new URL(urlOrHost).hostname;
+  } catch {
+    // Not a full URL — treat the input as a hostname.
+  }
+  return NB_APP_HOSTS.includes(host);
+}
+
 export const NB_URLS = {
-  BASE: 'https://notebooklm.google.com',
-  DASHBOARD: 'https://notebooklm.google.com/',
-  BATCH_EXECUTE: 'https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute',
-  CHAT_STREAM: 'https://notebooklm.google.com/_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed',
-  UPLOAD: 'https://notebooklm.google.com/upload/_/',
+  BASE: NB_ORIGIN,
+  DASHBOARD: `${NB_ORIGIN}/`,
+  BATCH_EXECUTE: `${NB_ORIGIN}/_/LabsTailwindUi/data/batchexecute`,
+  CHAT_STREAM: `${NB_ORIGIN}/_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed`,
+  UPLOAD: `${NB_ORIGIN}/upload/_/`,
 } as const;
+
+/** Canonical web URL for a notebook, for user-facing links. */
+export function notebookUrl(notebookId: string): string {
+  return `${NB_ORIGIN}/notebook/${notebookId}`;
+}
 
 export const DEFAULT_USER_CONFIG = [2, null, null, [1, null, null, null, null, null, null, null, null, null, [1]], [[2, 1, 3]]] as const;
 

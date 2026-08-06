@@ -37,7 +37,7 @@ function makeSession(overrides: Partial<NotebookRpcSession> = {}): NotebookRpcSe
 
 function makeRequest(): TransportRequest {
   return {
-    url: 'https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute',
+    url: 'https://notebook.google.com/_/LabsTailwindUi/data/batchexecute',
     queryParams: { rpcids: 'CCqFvf', bl: 'test' },
     body: { 'f.req': '[[]]', at: 'csrf-token' },
   };
@@ -106,7 +106,7 @@ describe('CurlTransport', () => {
 
     expect(headerValues.some((h: string) => h.includes('X-Same-Domain: 1'))).toBe(true);
     expect(headerValues.some((h: string) => h.includes('Sec-Fetch-Mode: cors'))).toBe(true);
-    expect(headerValues.some((h: string) => h.includes('Origin: https://notebooklm.google.com'))).toBe(true);
+    expect(headerValues.some((h: string) => h.includes('Origin: https://notebook.google.com'))).toBe(true);
   });
 
   it('should throw on non-2xx status', async () => {

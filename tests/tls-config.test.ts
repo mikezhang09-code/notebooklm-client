@@ -19,9 +19,9 @@ describe('tls-config', () => {
   });
 
   it('chromeTlsOptions should return valid config', () => {
-    const opts = chromeTlsOptions('notebooklm.google.com');
+    const opts = chromeTlsOptions('notebook.google.com');
 
-    expect(opts.servername).toBe('notebooklm.google.com');
+    expect(opts.servername).toBe('notebook.google.com');
     expect(opts.minVersion).toBe('TLSv1.2');
     expect(opts.maxVersion).toBe('TLSv1.3');
     expect(opts.ciphers).toBe(CHROME_CIPHERS);

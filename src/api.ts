@@ -9,7 +9,7 @@ import { statSync, readFileSync } from 'node:fs';
 import { resolve, basename, extname } from 'node:path';
 // SessionError used by addFileSource callers — not directly here
 import { parseEnvelopes } from './boq-parser.js';
-import { NB_RPC, NB_URLS, DEFAULT_USER_CONFIG, PLATFORM_WEB } from './rpc-ids.js';
+import { NB_RPC, NB_URLS, NB_ORIGIN, DEFAULT_USER_CONFIG, PLATFORM_WEB } from './rpc-ids.js';
 import { buildArtifactPayload, buildMindMapParams } from './artifact-payloads.js';
 import {
   parseCreateNotebook,
@@ -252,8 +252,8 @@ async function scottyUpload(
   const baseHeaders: Record<string, string> = {
     'Accept': '*/*',
     'Cookie': session.cookies,
-    'Origin': 'https://notebooklm.google.com',
-    'Referer': 'https://notebooklm.google.com/',
+    'Origin': NB_ORIGIN,
+    'Referer': `${NB_ORIGIN}/`,
     'User-Agent': session.userAgent,
     'x-goog-authuser': '0',
   };

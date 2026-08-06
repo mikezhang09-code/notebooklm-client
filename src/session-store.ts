@@ -10,6 +10,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CurlTransport } from './transport-curl.js';
+import { NB_URLS } from './rpc-ids.js';
 import { getSessionPath } from './paths.js';
 import type { NotebookRpcSession, SessionCookie } from './types.js';
 
@@ -36,7 +37,7 @@ function execFileAsync(
  * Build a basic cookieJar from flat cookie string for API calls.
  *
  * NOTE: This only sets cookies on .google.com — sufficient for RPC calls
- * (notebooklm.google.com) but NOT for downloads from Google CDN domains
+ * (notebook.google.com) but NOT for downloads from Google CDN domains
  * (lh3.googleusercontent.com, contribution.usercontent.google.com).
  * Downloads require export-session which captures domain-scoped cookies
  * from Chrome CDP (Network.getAllCookies).
@@ -199,8 +200,9 @@ export async function refreshTokens(
 
   const args: string[] = [
     '--impersonate', 'chrome136',
-    'https://notebooklm.google.com/',
+    NB_URLS.DASHBOARD,
     '-s', '-S',
+    '-L',                    // follow redirects (the app host has moved before)
     '--compressed',
     '-D', '-',               // dump response headers to stdout before body
     '-b', cookieFilePath,
@@ -221,21 +223,35 @@ export async function refreshTokens(
     try { unlinkSync(cookieFilePath); } catch { /* ignore */ }
   }
 
-  // Split headers (before first blank line) from body.
-  const headerBodySplit = stdout.search(/\r?\n\r?\n/);
-  const rawHeaders = headerBodySplit > 0 ? stdout.slice(0, headerBodySplit) : '';
-  const html = headerBodySplit > 0 ? stdout.slice(headerBodySplit).replace(/^\r?\n\r?\n/, '') : stdout;
+  // With -L, curl dumps one header block per redirect hop. Split on the LAST
+  // status line so `statusCode` and `html` describe the final response, not a 302.
+  let lastStatusIdx = 0;
+  const statusLineRe = /^HTTP\/[\d.]+\s+(\d{3})/gm;
+  let statusCode = 0;
+  for (let m = statusLineRe.exec(stdout); m; m = statusLineRe.exec(stdout)) {
+    lastStatusIdx = m.index;
+    statusCode = parseInt(m[1]!, 10);
+  }
 
-  const statusLine = rawHeaders.split(/\r?\n/)[0] ?? '';
-  const statusMatch = /HTTP\/[\d.]+\s+(\d{3})/.exec(statusLine);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]!, 10) : 0;
+  const bodyOffset = stdout.slice(lastStatusIdx).search(/\r?\n\r?\n/);
+  const html = bodyOffset > 0
+    ? stdout.slice(lastStatusIdx + bodyOffset).replace(/^\r?\n\r?\n/, '')
+    : stdout;
+
+  if (process.env['NOTEBOOKLM_DEBUG']) {
+    const chain = stdout.split(/\r?\n/)
+      .filter(l => /^(HTTP\/[\d.]+\s+\d{3}|location:)/i.test(l))
+      .join('\n  ');
+    console.error(`NotebookLM: refresh chain:\n  ${chain}`);
+  }
+
   if (statusCode !== 200) {
     throw new Error(`Token refresh failed: HTTP ${statusCode}`);
   }
 
-  // Collect Set-Cookie headers (case-insensitive, possibly multiple).
+  // Collect Set-Cookie headers from every hop (case-insensitive, possibly multiple).
   const setCookies: string[] = [];
-  for (const line of rawHeaders.split(/\r?\n/)) {
+  for (const line of stdout.slice(0, lastStatusIdx + Math.max(bodyOffset, 0)).split(/\r?\n/)) {
     const m = /^set-cookie:\s*(.*)$/i.exec(line);
     if (m) setCookies.push(m[1]!);
   }
@@ -250,14 +266,31 @@ export async function refreshTokens(
     throw new Error('Token refresh failed: SNlM0e not found in page (cookies may be expired)');
   }
 
+  // Every Google page carries an SNlM0e, including the sign-in UI. If the
+  // cookies no longer authenticate us, `-L` lands on accounts.google.com and we
+  // would happily scrape *its* token (bl=boq_identityfrontendauthuiserver...),
+  // overwrite a good session.json with it, and then 401 on every RPC. Require
+  // the token to come from the notebook app itself.
+  const refreshedBl = blMatch?.[1] ?? '';
+  if (!refreshedBl.includes('labs-tailwind')) {
+    const redirects = stdout.split(/\r?\n/)
+      .map(l => /^location:\s*(.*)$/i.exec(l)?.[1])
+      .filter((v): v is string => !!v);
+    throw new Error(
+      'Token refresh failed: not signed in to Gemini Notebook ' +
+      `(served ${refreshedBl || 'an unknown page'}${redirects.length ? ` via ${redirects[redirects.length - 1]}` : ''}). ` +
+      'Cookies are expired — re-run `export-session` to log in again.',
+    );
+  }
+
   const updatedCookies = mergeCookies(session.cookies, setCookies);
 
   const refreshed: NotebookRpcSession = {
     at: atMatch[1],
-    bl: blMatch?.[1] ?? session.bl,
+    bl: refreshedBl,
     fsid: fsidMatch?.[1] ?? session.fsid,
     cookies: updatedCookies,
-    cookieJar: inferCookieJar(updatedCookies),
+    cookieJar: mergeCookieJar(session.cookieJar, updatedCookies),
     userAgent: session.userAgent,
     language: langMatch?.[1]?.split('-')[0] ?? session.language,
   };
@@ -268,6 +301,51 @@ export async function refreshTokens(
   console.error(`NotebookLM: Tokens refreshed and saved to ${filePath}`);
 
   return refreshed;
+}
+
+/**
+ * Fold refreshed cookie values into the exported jar, keeping each cookie's
+ * original domain/path scoping.
+ *
+ * The jar that `export-session` captures via CDP is the only place we know the
+ * real scope of host-scoped cookies such as OSID. Rebuilding it from the flat
+ * cookie string instead (via `inferCookieJar`) re-labels everything as
+ * `.google.com`, and a wrongly-scoped OSID makes the next refresh bounce
+ * through /accounts/SetOSID into /CookieMismatch — so each refresh would
+ * degrade the session until only a browser re-login could fix it.
+ */
+function mergeCookieJar(
+  jar: SessionCookie[] | undefined,
+  updatedCookies: string,
+): SessionCookie[] {
+  if (!jar || jar.length === 0) return inferCookieJar(updatedCookies);
+
+  const values = new Map<string, string>();
+  for (const pair of updatedCookies.split('; ')) {
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx > 0) values.set(pair.slice(0, eqIdx), pair.slice(eqIdx + 1));
+  }
+
+  const merged = jar
+    .filter(c => values.has(c.name))
+    .map(c => ({ ...c, value: values.get(c.name)! }));
+
+  // Cookies the server newly set have no entry in the exported jar; fall back
+  // to the domain-wide default for those.
+  const known = new Set(merged.map(c => c.name));
+  for (const [name, value] of values) {
+    if (known.has(name)) continue;
+    merged.push({
+      name,
+      value,
+      domain: '.google.com',
+      path: '/',
+      secure: name.startsWith('__Secure') || name.startsWith('__Host'),
+      httpOnly: false,
+    });
+  }
+
+  return merged;
 }
 
 /**
@@ -292,7 +370,16 @@ function mergeCookies(existing: string, setCookieHeader: string | string[] | und
       if (nameValue) {
         const eqIdx = nameValue.indexOf('=');
         if (eqIdx > 0) {
-          cookieMap.set(nameValue.slice(0, eqIdx).trim(), nameValue.slice(eqIdx + 1).trim());
+          const name = nameValue.slice(0, eqIdx).trim();
+          const value = nameValue.slice(eqIdx + 1).trim();
+          // An empty value is a deletion (`Set-Cookie: NAME=; Expires=<past>`).
+          // Storing it verbatim would send `NAME=` on the next request, which
+          // Google reads as a malformed cookie rather than an absent one.
+          if (value === '') {
+            cookieMap.delete(name);
+          } else {
+            cookieMap.set(name, value);
+          }
         }
       }
     }
