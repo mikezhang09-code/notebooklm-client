@@ -1,5 +1,5 @@
 import { Icon } from './Icon';
-import { describe } from '../lib/registry';
+import { describe, faceText } from '../lib/registry';
 import type { Item } from '../lib/artifacts';
 
 export default function ItemCard({
@@ -20,7 +20,7 @@ export default function ItemCard({
       onClick={() => onOpen(item)}
     >
       <div className="item-top">
-        <span className="t-ic">
+        <span className="t-ic" title={faceText(t)}>
           <Icon id={t.icon} />
         </span>
       </div>

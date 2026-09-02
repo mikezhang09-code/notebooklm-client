@@ -16,7 +16,7 @@ import QuizEditor from '../../components/QuizEditor';
 import FlashcardsEditor from '../../components/FlashcardsEditor';
 import MindmapEditor from '../../components/MindmapEditor';
 import DiagramEditor from '../../components/DiagramEditor';
-import { TYPE, SOURCES, type TypeKey } from '../../lib/registry';
+import { TYPE, SOURCES, describe, faceText, type TypeKey } from '../../lib/registry';
 import { listItems, fetchNotebookMap, resolveFrom, type Item, type Provenance } from '../../lib/artifacts';
 
 type Filter = 'all' | Provenance;
@@ -201,11 +201,14 @@ export default function FreeFormTypePage() {
           </div>
           {rows.map((it) => {
             const src = SOURCES[it.provenance];
+            // Per-item face, not the section's — same type, different formats
+            // (a Markdown vs an HTML report) must stay tellable apart here.
+            const face = describe(it.kind, it.mimeType, it.title);
             return (
               <div key={it.id} className="fft-row" onClick={() => setOpen(it)}>
                 <div className="fft-name">
-                  <span className="t-ic" style={{ width: 32, height: 32 }}>
-                    <Icon id={t.icon} />
+                  <span className="t-ic" style={{ width: 32, height: 32 }} title={faceText(face)}>
+                    <Icon id={face.icon} />
                   </span>
                   <div className="fft-name-col">
                     <span className="fft-nm">{it.title}</span>
@@ -233,7 +236,9 @@ export default function FreeFormTypePage() {
                   </span>
                 </span>
                 <span className="fft-from">{it.from ?? '—'}</span>
-                <span className="fft-mono">{fmtSize(it.sizeBytes)}</span>
+                <span className="fft-mono">
+                  {[face.format, fmtSize(it.sizeBytes)].filter(Boolean).join(' · ')}
+                </span>
                 <span className="fft-date">{new Date(it.createdAt).toLocaleDateString()}</span>
                 <div className="fft-act" onClick={(e) => e.stopPropagation()}>
                   <button className="icon-btn" onClick={() => setOpen(it)}>

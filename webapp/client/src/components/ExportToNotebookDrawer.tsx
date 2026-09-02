@@ -10,7 +10,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { streamSse } from '../lib/api';
-import { describe } from '../lib/registry';
+import { describe, faceText } from '../lib/registry';
 import type { CollectionFile } from '../lib/collections';
 import { toast } from '../lib/toast';
 
@@ -194,7 +194,7 @@ export default function ExportToNotebookDrawer({
                         {f.title}
                       </span>
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                        {face.label}
+                        {faceText(face)}
                         {img ? ' · image' : ''}
                       </span>
                     </label>

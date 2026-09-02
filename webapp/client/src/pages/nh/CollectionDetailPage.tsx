@@ -17,7 +17,7 @@ import UploadDrawer from '../../components/UploadDrawer';
 import { TypePicker, CreateChooser } from '../../components/CreateFlow';
 import GenerateFromCollectionDrawer from '../../components/GenerateFromCollectionDrawer';
 import ExportToNotebookDrawer from '../../components/ExportToNotebookDrawer';
-import { describe, TYPE, type TypeKey } from '../../lib/registry';
+import { describe, faceText, TYPE, type TypeKey } from '../../lib/registry';
 import {
   getCollection,
   updateCollection,
@@ -198,7 +198,7 @@ export default function CollectionDetailPage() {
                   <div className="f-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {f.title}
                   </div>
-                  <div className="f-sub">{face.label}</div>
+                  <div className="f-sub">{faceText(face)}</div>
                 </div>
                 <div className="f-col">{fmtSize(f.sizeBytes)}</div>
                 <div className="f-col">{new Date(f.createdAt).toLocaleDateString()}</div>

@@ -195,10 +195,17 @@ export function toBackendValue(v: string): string {
 
 // ── File-type classification (for uploads, which all share kind='upload') ──
 
+export const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+export const DOCX_MIME =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 export interface Face {
   label: string;
   icon: string;
   color: string;
+  /** Serialization format ("Markdown", "HTML") when the kind alone doesn't say. */
+  format?: string;
 }
 
 const KIND_TO_KEY: Record<string, TypeKey> = {
@@ -226,17 +233,21 @@ export function fileFace(mimeType?: string | null, title?: string): Face {
   const ext = (title?.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
   const has = (...e: string[]) => e.includes(ext);
 
-  if (m === 'text/html' || has('html', 'htm')) return { label: 'Web page', icon: 'i-link', color: '#4a76a8' };
+  if (m === 'text/html' || has('html', 'htm')) return { label: 'Web page', icon: 'i-html', color: '#4a76a8' };
   if (m === 'text/markdown' || m === 'text/x-markdown' || has('md', 'markdown'))
-    return { label: 'Markdown', icon: 'i-doc', color: '#8a7c4a' };
+    return { label: 'Markdown', icon: 'i-md', color: '#8a7c4a' };
   if (m === 'application/pdf' || has('pdf')) return { label: 'PDF', icon: 'i-report', color: '#c1503f' };
   if (m.includes('wordprocessingml') || m === 'application/msword' || has('doc', 'docx'))
     return { label: 'Document', icon: 'i-doc', color: '#4a76a8' };
   if (m.includes('presentationml') || m === 'application/vnd.ms-powerpoint' || has('ppt', 'pptx'))
     return { label: 'Slides', icon: 'i-slides', color: '#467b86' };
-  if (m.includes('spreadsheetml') || m === 'application/vnd.ms-excel' || m === 'text/csv' || has('csv', 'xls', 'xlsx'))
-    return { label: 'Spreadsheet', icon: 'i-table', color: '#8a7c4a' };
-  if (m === 'application/json' || has('json')) return { label: 'JSON', icon: 'i-table', color: '#8a7c4a' };
+  // Both stay labelled "Spreadsheet" so typeKeyFor() keeps grouping them
+  // together; the icon + format tell an Excel workbook from a plain CSV.
+  if (m.includes('spreadsheetml') || m === 'application/vnd.ms-excel' || has('xls', 'xlsx'))
+    return { label: 'Spreadsheet', icon: 'i-xlsx', color: '#8a7c4a', format: 'Excel' };
+  if (m === 'text/csv' || has('csv'))
+    return { label: 'Spreadsheet', icon: 'i-table', color: '#8a7c4a', format: 'CSV' };
+  if (m === 'application/json' || has('json')) return { label: 'JSON', icon: 'i-json', color: '#8a7c4a' };
   if (
     m === 'text/javascript' ||
     m === 'application/javascript' ||
@@ -255,13 +266,58 @@ export function fileFace(mimeType?: string | null, title?: string): Face {
 }
 
 /**
+ * Icon + name for the serialization format a blob is stored in, or null when
+ * the format has no face of its own. Keyed on MIME, falling back to the
+ * filename extension (titles don't always carry one).
+ */
+function formatFace(
+  mimeType?: string | null,
+  title?: string,
+): { icon: string; format: string } | null {
+  const m = (mimeType ?? '').split(';')[0]!.trim().toLowerCase();
+  const ext = (title?.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+  const is = (mimes: string[], exts: string[]) => mimes.includes(m) || exts.includes(ext);
+
+  if (is(['text/html'], ['html', 'htm'])) return { icon: 'i-html', format: 'HTML' };
+  if (is(['text/markdown', 'text/x-markdown'], ['md', 'markdown']))
+    return { icon: 'i-md', format: 'Markdown' };
+  if (is([XLSX_MIME, 'application/vnd.ms-excel'], ['xlsx', 'xls']))
+    return { icon: 'i-xlsx', format: 'Excel' };
+  if (is(['text/csv'], ['csv'])) return { icon: 'i-table', format: 'CSV' };
+  if (is(['application/json'], ['json'])) return { icon: 'i-json', format: 'JSON' };
+  if (is(['application/pdf'], ['pdf'])) return { icon: 'i-report', format: 'PDF' };
+  if (is([DOCX_MIME, 'application/msword'], ['docx', 'doc']))
+    return { icon: 'i-doc', format: 'Word' };
+  return null;
+}
+
+/**
+ * Kinds whose saved blob genuinely varies in format, so the face has to say
+ * which one it is: a report is Markdown *or* HTML *or* PDF, a data table is a
+ * generated CSV *or* an uploaded Excel workbook. Every other kind has one
+ * format in practice (notes are Markdown, mind maps are JSON, slides are
+ * .pptx …), where a format suffix would be noise and a format icon would
+ * bury the type.
+ */
+const MULTI_FORMAT_KINDS = new Set(['report', 'data_table']);
+
+/**
  * Resolve the display face for any artifact: real artifact kinds use the type
- * registry; uploads are classified by file type (so HTML ≠ Markdown ≠ PDF …).
+ * registry; uploads are classified by file type (so HTML ≠ Markdown ≠ PDF …);
+ * multi-format kinds additionally carry the format they were saved in.
  */
 export function describe(kind: string, mimeType?: string | null, title?: string): Face {
   if (kind === 'upload') return fileFace(mimeType, title);
   const t = TYPE[KIND_TO_KEY[kind] ?? 'report'];
-  return { label: t.label, icon: t.icon, color: t.color };
+  const face: Face = { label: t.label, icon: t.icon, color: t.color };
+  if (!MULTI_FORMAT_KINDS.has(kind)) return face;
+  const f = formatFace(mimeType, title);
+  return f ? { ...face, icon: f.icon, format: f.format } : face;
+}
+
+/** Face label for display, with the format appended when there is one. */
+export function faceText(face: Face): string {
+  return face.format ? `${face.label} · ${face.format}` : face.label;
 }
 
 /**

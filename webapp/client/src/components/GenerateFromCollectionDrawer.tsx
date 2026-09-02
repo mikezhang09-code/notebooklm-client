@@ -25,6 +25,7 @@ import {
   LANGS,
   LANG_CODE,
   describe,
+  faceText,
   TYPE,
   toBackendValue,
   type TypeKey,
@@ -313,7 +314,7 @@ export default function GenerateFromCollectionDrawer({
                         {f.title}
                       </span>
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                        {face.label}
+                        {faceText(face)}
                         {!eligible ? ' · derived' : ''}
                       </span>
                     </label>

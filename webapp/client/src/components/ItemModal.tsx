@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
-import { describe, SOURCES } from '../lib/registry';
+import { describe, faceText, SOURCES } from '../lib/registry';
 import { getDownloadUrl, deleteItem, shareItem, getRawText, isEditable, type Item } from '../lib/artifacts';
 import { isStudyKind } from '../lib/study';
 import { toast } from '../lib/toast';
@@ -114,14 +114,14 @@ export default function ItemModal({
           </button>
         </div>
         <div className="modal-body">
-          <div className="m-type">{t.label}</div>
+          <div className="m-type">{faceText(t)}</div>
           <h2>{item.title}</h2>
           <span className={`prov p-${item.provenance}`} style={{ marginTop: 12, display: 'inline-flex' }}>
             <Icon id={src.icon} /> {src.label}
           </span>
           <dl className="kv">
             <dt>Type</dt>
-            <dd>{t.label}</dd>
+            <dd>{faceText(t)}</dd>
             <dt>Source</dt>
             <dd>{src.label}</dd>
             <dt>From</dt>

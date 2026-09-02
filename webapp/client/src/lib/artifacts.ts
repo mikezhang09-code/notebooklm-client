@@ -1,6 +1,6 @@
 /** Client for the corpus artifacts aggregation (GET /api/corpus/artifacts). */
 import { apiGet, apiJson, apiDelete, apiFormData, streamJsonSse } from './api';
-import { typeKeyFor } from './registry';
+import { typeKeyFor, DOCX_MIME, XLSX_MIME } from './registry';
 import type { TypeKey } from './registry';
 
 export type Provenance = 'notebooklm' | 'personal' | 'standalone';
@@ -156,11 +156,9 @@ export function getRawText(id: string): Promise<{ content: string; mimeType: str
   return apiGet(`/api/corpus/artifacts/${id}/raw`);
 }
 
-export const DOCX_MIME =
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-export const XLSX_MIME =
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+// Defined in the registry (the file-type source of truth), re-exported here
+// because the artifact API surface is where callers reach for them.
+export { DOCX_MIME, XLSX_MIME };
 
 /**
  * Serialization format the in-app Excel editor can round-trip losslessly for
