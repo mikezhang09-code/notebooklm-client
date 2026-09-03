@@ -4,14 +4,13 @@
  *
  *   • Mermaid    — ```mermaid fenced blocks → inline SVG diagrams
  *   • highlight.js — syntax-highlight other fenced code blocks
- *   • KaTeX      — render $$…$$ / \[…\] (display) and \(…\) (inline) math
+ *   • KaTeX      — render $$…$$ / \[…\] (display) and \(…\) / $…$ (inline) math
  *   • Copy buttons — a hover "Copy" button on every fenced code block
  *
  * Every library is loaded with a dynamic import() so none of them land in the
  * main bundle — they only download the first time a document actually needs a
- * diagram, a code block, or math. KaTeX math deliberately ignores single `$`
- * delimiters: our corpus is full of currency like "$1,035", which would
- * otherwise be mangled into math.
+ * diagram, a code block, or math. Inline `$…$` math is matched conservatively
+ * so currency like "$1,035" isn't mangled into math — see {@link MATH_RE}.
  */
 
 /** Returns true when the in-flight render should stop (content changed/unmounted). */
@@ -166,8 +165,47 @@ async function highlightCode(el: HTMLElement, isCancelled: CancelFn): Promise<vo
 
 // ── Math (KaTeX) ─────────────────────────────────────────────────────────────
 
-// $$…$$ or \[…\] → display math; \(…\) → inline math. Single `$` is ignored.
-const MATH_RE = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g;
+/**
+ * Math delimiters: `$$…$$` and `\[…\]` are display; `\(…\)` and `$…$` are inline.
+ *
+ * Single `$` is currency-hostile territory — the corpus is full of prices like
+ * "$1,035" — so the inline `$…$` form is fenced in by pandoc's rules: the
+ * opener isn't followed by whitespace, the closer isn't preceded by whitespace
+ * nor followed by a digit, and the body is one line of bounded length. That
+ * clears "费用 $1,035 和 $2,000 元", "价格 $5和$10" and "US$100–US$200" while
+ * still catching "$\rightarrow$" and "$x_i^2$".
+ */
+const MATH_RE =
+  /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\.){1,200}?)(?<![\s\\])\$(?!\d)/g;
+
+/** Non-global twin for cheap "does this text node hold any math?" tests. */
+const HAS_MATH_RE = new RegExp(MATH_RE.source);
+
+/** One math span located in a run of plain text. */
+export interface MathSpan {
+  tex: string;
+  display: boolean;
+  /** Offsets of the whole delimited span, including its delimiters. */
+  start: number;
+  end: number;
+}
+
+/** Locate the math spans in a run of plain text. Exported for tests. */
+export function findMath(text: string): MathSpan[] {
+  const out: MathSpan[] = [];
+  // matchAll() seeds its clone from lastIndex — start from a known offset.
+  MATH_RE.lastIndex = 0;
+  for (const m of text.matchAll(MATH_RE)) {
+    const start = m.index ?? 0;
+    out.push({
+      tex: (m[1] ?? m[2] ?? m[3] ?? m[4] ?? '').trim(),
+      display: m[1] != null || m[2] != null,
+      start,
+      end: start + m[0].length,
+    });
+  }
+  return out;
+}
 
 async function renderMath(el: HTMLElement, isCancelled: CancelFn): Promise<void> {
   const targets = collectMathTextNodes(el);
@@ -182,15 +220,12 @@ async function renderMath(el: HTMLElement, isCancelled: CancelFn): Promise<void>
     const text = node.nodeValue ?? '';
     const frag = document.createDocumentFragment();
     let last = 0;
-    for (const m of text.matchAll(MATH_RE)) {
-      const idx = m.index ?? 0;
-      if (idx > last) frag.append(text.slice(last, idx));
-      const display = m[1] != null || m[2] != null;
-      const tex = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    for (const { tex, display, start, end } of findMath(text)) {
+      if (start > last) frag.append(text.slice(last, start));
       const span = document.createElement('span');
       span.innerHTML = katex.renderToString(tex, { displayMode: display, throwOnError: false });
       frag.append(display ? wrapBlock(span) : span);
-      last = idx + m[0].length;
+      last = end;
     }
     if (last < text.length) frag.append(text.slice(last));
     node.parentNode?.replaceChild(frag, node);
@@ -211,8 +246,7 @@ function collectMathTextNodes(el: HTMLElement): Text[] {
     acceptNode(node) {
       const parent = (node as Text).parentElement;
       if (!parent || parent.closest('code, pre, svg, a, .katex')) return NodeFilter.FILTER_REJECT;
-      MATH_RE.lastIndex = 0;
-      return MATH_RE.test(node.nodeValue ?? '')
+      return HAS_MATH_RE.test(node.nodeValue ?? '')
         ? NodeFilter.FILTER_ACCEPT
         : NodeFilter.FILTER_REJECT;
     },

@@ -19,6 +19,28 @@ import { enhanceMarkdown } from './markdown-enhance';
 // autolinks). Configure once so every call site renders identically.
 marked.setOptions({ gfm: true });
 
+// CommonMark treats a backslash before ASCII punctuation as an escape, so
+// marked turns the LaTeX delimiters \( \) \[ \] into bare brackets and the
+// math never reaches KaTeX (which runs later, over the DOM). This inline
+// extension claims those two-character sequences first and re-emits them
+// verbatim. Extensions are tried before marked's own inline tokenizers, but
+// only on inline content — fenced blocks and code spans are tokenized as a
+// unit elsewhere, so `\(` inside code still renders literally.
+marked.use({
+  extensions: [
+    {
+      name: 'mathDelimiter',
+      level: 'inline',
+      start: (src: string) => src.match(/\\[[\]()]/)?.index,
+      tokenizer(src: string) {
+        const m = /^\\([[\]()])/.exec(src);
+        return m ? { type: 'mathDelimiter', raw: m[0], text: m[0] } : undefined;
+      },
+      renderer: (token) => token.text,
+    },
+  ],
+});
+
 /** Parse Markdown → raw (unsanitised) HTML. Throws on malformed input. */
 export function parseMarkdown(md: string): string {
   return marked.parse(md, { async: false }) as string;
