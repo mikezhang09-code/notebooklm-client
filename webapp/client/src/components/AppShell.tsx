@@ -1,6 +1,9 @@
 /**
  * NotebookHub app shell — espresso sidebar rail + sticky topbar + routed outlet.
  * Two-column grid, each column scrolls internally (no page scroll).
+ *
+ * The rail collapses to an icon-only strip (toggle in its header, preference
+ * persisted); collapsed nav items fall back to native tooltips for their names.
  */
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -13,6 +16,17 @@ import { clearSession } from '../lib/session-store';
 interface Crumb {
   label: string;
   to?: string;
+}
+
+const RAIL_KEY = 'nh-rail-collapsed';
+
+/** Collapsed/expanded rail state, persisted the same way as the theme. */
+function useRailCollapsed(): [boolean, () => void] {
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(RAIL_KEY) === '1');
+  useEffect(() => {
+    localStorage.setItem(RAIL_KEY, collapsed ? '1' : '0');
+  }, [collapsed]);
+  return [collapsed, () => setCollapsed((c) => !c)];
 }
 
 /** Build breadcrumbs from the current path. Last crumb is bold (non-link). */
@@ -57,6 +71,9 @@ export default function AppShell() {
   const navigate = useNavigate();
   const crumbs = useCrumbs();
   const [nbCount, setNbCount] = useState<number | null>(null);
+  const [collapsed, toggleRail] = useRailCollapsed();
+  /** Nav labels only survive as tooltips once the rail is icon-only. */
+  const tip = (label: string) => (collapsed ? label : undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,8 +86,8 @@ export default function AppShell() {
   }, []);
 
   return (
-    <div className="shell">
-      <aside className="side">
+    <div className={`shell${collapsed ? ' rail-collapsed' : ''}`}>
+      <aside className="side" id="app-sidebar">
         <div className="side-brand">
           <span className="mark">
             <Icon id="i-book" />
@@ -78,6 +95,16 @@ export default function AppShell() {
           <b>
             Notebook<span>Hub</span>
           </b>
+          <button
+            className="rail-toggle"
+            onClick={toggleRail}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
+          >
+            <Icon id={collapsed ? 'i-chev' : 'i-back'} />
+          </button>
         </div>
 
         <div className="side-scroll">
@@ -86,6 +113,7 @@ export default function AppShell() {
             <div className="nav-label">Library</div>
             <NavLink
               to="/notebooklm"
+              title={tip('NotebookLM')}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
               <span className="col-ic">
@@ -99,6 +127,7 @@ export default function AppShell() {
             </NavLink>
             <NavLink
               to="/collections"
+              title={tip('Collections')}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
               <span className="col-ic">
@@ -115,6 +144,7 @@ export default function AppShell() {
           <div className="nav-sec">
             <NavLink
               to="/ask"
+              title={tip('Ask')}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
               <Icon id="i-chat" />
@@ -124,14 +154,29 @@ export default function AppShell() {
 
           {/* FREE FORMS */}
           <div className="nav-sec">
-            <button className="nav-label clickable" onClick={() => navigate('/free-forms')}>
-              <span>Free Forms</span>
-              <span className="lab-x">All ›</span>
-            </button>
+            {collapsed ? (
+              // The section label carries the link to the overview; with labels
+              // hidden it becomes an icon item, or the page is unreachable.
+              <NavLink
+                to="/free-forms"
+                end
+                title="Free Forms"
+                className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+              >
+                <Icon id="i-spark" />
+                <span className="n-label">Free Forms</span>
+              </NavLink>
+            ) : (
+              <button className="nav-label clickable" onClick={() => navigate('/free-forms')}>
+                <span>Free Forms</span>
+                <span className="lab-x">All ›</span>
+              </button>
+            )}
             {TYPES.map((t) => (
               <NavLink
                 key={t.key}
                 to={`/free-forms/${t.key}`}
+                title={tip(t.label)}
                 style={{ '--tc': t.color } as React.CSSProperties}
                 className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
               >
@@ -147,6 +192,7 @@ export default function AppShell() {
             <div className="nav-label">Settings</div>
             <NavLink
               to="/settings/session"
+              title={tip('Session')}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
               <Icon id="i-gear" />
@@ -154,6 +200,7 @@ export default function AppShell() {
             </NavLink>
             <NavLink
               to="/settings/diagnose"
+              title={tip('Diagnose')}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
               <Icon id="i-pulse" />
