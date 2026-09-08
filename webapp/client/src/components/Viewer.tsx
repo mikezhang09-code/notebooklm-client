@@ -12,7 +12,13 @@ import { Icon } from './Icon';
 import MindmapView from './MindmapView';
 import { MarkdownView, sanitizeHtml } from '../lib/markdown';
 import { copyText } from '../lib/markdown-enhance';
-import { getView, DOCX_MIME, sheetBookType, type ViewPayload } from '../lib/artifacts';
+import {
+  getView,
+  artifactDownloadUrl,
+  DOCX_MIME,
+  sheetBookType,
+  type ViewPayload,
+} from '../lib/artifacts';
 
 // The Word editor pulls in ProseMirror + the OOXML engine — keep it out of
 // the main bundle and load it only when the user clicks Edit.
@@ -213,8 +219,8 @@ export default function Viewer({
               <Icon id="i-rows" />
             </button>
           )}
-          {view && 'downloadUrl' in view && (
-            <a className="btn btn-soft" href={view.downloadUrl} download>
+          {view && (
+            <a className="btn btn-soft" href={artifactDownloadUrl(id)} download>
               <Icon id="i-download" /> Download
             </a>
           )}
@@ -286,7 +292,7 @@ export default function Viewer({
             )}
             {view?.type === 'video' &&
               (mediaError ? (
-                <MediaFallback kind="video" url={view.downloadUrl} />
+                <MediaFallback kind="video" id={id} />
               ) : (
                 <div style={{ display: 'grid', placeItems: 'center', minHeight: '100%', padding: 24 }}>
                   <video
@@ -299,7 +305,7 @@ export default function Viewer({
               ))}
             {view?.type === 'audio' &&
               (mediaError ? (
-                <MediaFallback kind="audio" url={view.downloadUrl} />
+                <MediaFallback kind="audio" id={id} />
               ) : (
                 <div style={{ display: 'grid', placeItems: 'center', minHeight: '100%', padding: 24 }}>
                   <audio
@@ -364,7 +370,12 @@ export default function Viewer({
               <div className="empty">
                 <Icon id="i-doc" />
                 <p>No inline preview for this file type.</p>
-                <a className="btn btn-primary" href={view.downloadUrl} download style={{ marginTop: 12 }}>
+                <a
+                  className="btn btn-primary"
+                  href={artifactDownloadUrl(id)}
+                  download
+                  style={{ marginTop: 12 }}
+                >
                   <Icon id="i-download" /> Download
                 </a>
               </div>
@@ -410,12 +421,12 @@ export default function Viewer({
 }
 
 /** Shown when the browser can't decode an audio/video file's codec. */
-function MediaFallback({ kind, url }: { kind: 'audio' | 'video'; url: string }) {
+function MediaFallback({ kind, id }: { kind: 'audio' | 'video'; id: string }) {
   return (
     <div className="empty">
       <Icon id={kind === 'video' ? 'i-video' : 'i-audio'} />
       <p>This {kind} format can’t be played in your browser. Download it to play in another app.</p>
-      <a className="btn btn-primary" href={url} download style={{ marginTop: 12 }}>
+      <a className="btn btn-primary" href={artifactDownloadUrl(id)} download style={{ marginTop: 12 }}>
         <Icon id="i-download" /> Download
       </a>
     </div>

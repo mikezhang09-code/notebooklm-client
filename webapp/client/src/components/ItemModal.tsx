@@ -1,11 +1,20 @@
 /**
  * Item detail modal — type-colored cover + key/value facts + actions
- * (Open / Download / Share / Delete). Fetches a fresh PAR download URL.
+ * (Open / Download / Share / Delete). "Open" uses a fresh PAR URL; "Download"
+ * goes through the same-origin file route, the only way <a download> works.
  */
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { describe, faceText, SOURCES } from '../lib/registry';
-import { getDownloadUrl, deleteItem, shareItem, getRawText, isEditable, type Item } from '../lib/artifacts';
+import {
+  getDownloadUrl,
+  artifactDownloadUrl,
+  deleteItem,
+  shareItem,
+  getRawText,
+  isEditable,
+  type Item,
+} from '../lib/artifacts';
 import { isStudyKind } from '../lib/study';
 import { toast } from '../lib/toast';
 import Viewer from './Viewer';
@@ -169,12 +178,7 @@ export default function ItemModal({
           >
             <Icon id="i-ext" /> Open
           </a>
-          <a
-            className="btn btn-soft"
-            href={downloadUrl ?? '#'}
-            download
-            onClick={(e) => !downloadUrl && e.preventDefault()}
-          >
+          <a className="btn btn-soft" href={artifactDownloadUrl(item.id)} download>
             <Icon id="i-download" /> Download
           </a>
           <button className="btn btn-soft" onClick={handleShare}>

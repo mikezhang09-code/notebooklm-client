@@ -13,7 +13,9 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { readFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import oracledb from 'oracledb';
 import mammoth from 'mammoth';
 import { asyncHandler } from '../lib/handler.js';
@@ -25,6 +27,7 @@ import {
   createReadPar,
   deleteObject,
   getObjectBuffer,
+  getObjectStream,
   searchCorpus,
   chatCorpus,
   chatCorpusStream,
@@ -1279,12 +1282,46 @@ corpusRouter.get(
 );
 
 /**
+ * Filename to save an artifact under: the title the user sees in the UI,
+ * carrying the stored object's extension. Object names are `<ulid>/<file>`,
+ * whose basename is whatever the file was called on ingest — often something
+ * like "report_1757280411.md", which is not what the library shows.
+ */
+function downloadFilename(title: unknown, objectName: string): string {
+  const stored = basename(objectName);
+  const ext = extname(stored);
+  const base = (typeof title === 'string' ? title : '')
+    // Anything a filesystem or a Content-Disposition header would choke on.
+    .replace(/[\\/:*?"<>|]/g, '_')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+    .trim();
+  if (!base) return stored;
+  return base.toLowerCase().endsWith(ext.toLowerCase()) ? base : base + ext;
+}
+
+/** RFC 6266 Content-Disposition with an ASCII fallback beside the UTF-8 name. */
+function contentDisposition(kind: 'inline' | 'attachment', filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'download';
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/**
  * GET /api/corpus/artifacts/:id/file — stream the raw blob bytes same-origin.
  *
  * The PAR download URL points at OCI Object Storage, which sends no CORS
  * headers — fine for <iframe>/<img>/<audio> embeds, but a browser fetch()
  * for an ArrayBuffer (e.g. loading a DOCX into the in-app editor) is
  * blocked. This route proxies the bytes through the API origin instead.
+ *
+ * `?download=1` serves it as an attachment. A download button can't just
+ * point at the PAR: <a download> is ignored cross-origin, so the browser
+ * navigated to the blob and rendered it (Markdown and HTML reports opened as
+ * a page) instead of saving it. Same origin plus this header is what makes
+ * the browser save the file.
  */
 corpusRouter.get(
   '/artifacts/:id/file',
@@ -1300,8 +1337,12 @@ corpusRouter.get(
       return;
     }
     const row = await withConnection(cfg, async (conn) => {
-      const r = await conn.execute<{ OBJECT_NAME: string; MIME_TYPE: string | null }>(
-        `SELECT object_name, mime_type FROM artifacts WHERE id = :id`,
+      const r = await conn.execute<{
+        OBJECT_NAME: string;
+        MIME_TYPE: string | null;
+        TITLE: string | null;
+      }>(
+        `SELECT object_name, mime_type, title FROM artifacts WHERE id = :id`,
         { id },
         { outFormat: oracledb.OUT_FORMAT_OBJECT },
       );
@@ -1311,18 +1352,28 @@ corpusRouter.get(
       res.status(404).json({ error: 'artifact not found' });
       return;
     }
-    const buffer = await getObjectBuffer(cfg, row.OBJECT_NAME);
     const mime =
       row.MIME_TYPE?.split(';')[0]?.trim() ||
       inferMimeType(row.OBJECT_NAME) ||
       'application/octet-stream';
+    const asAttachment = Boolean(req.query['download']);
     res.setHeader('Content-Type', mime);
-    res.setHeader('Content-Length', String(buffer.length));
     res.setHeader(
       'Content-Disposition',
-      `inline; filename*=UTF-8''${encodeURIComponent(basename(row.OBJECT_NAME))}`,
+      contentDisposition(
+        asAttachment ? 'attachment' : 'inline',
+        downloadFilename(row.TITLE, row.OBJECT_NAME),
+      ),
     );
-    res.send(buffer);
+    const { body, contentLength } = await getObjectStream(cfg, row.OBJECT_NAME);
+    if (contentLength != null) res.setHeader('Content-Length', String(contentLength));
+    try {
+      await pipeline(Readable.from(body), res);
+    } catch (err) {
+      // Headers are already out — the socket is the only thing left to close.
+      console.error(`[corpus] download stream failed for ${row.OBJECT_NAME}:`, err);
+      res.destroy();
+    }
   }),
 );
 

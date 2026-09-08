@@ -177,6 +177,17 @@ export function artifactFileUrl(id: string): string {
   return `/api/corpus/artifacts/${id}/file`;
 }
 
+/**
+ * Same-origin URL that saves the artifact to disk. Must not be the PAR: the
+ * `download` attribute is ignored on cross-origin links, so pointing a
+ * download button at Object Storage navigates to the blob instead — which is
+ * why Markdown and HTML reports opened as a page. This route sends
+ * `Content-Disposition: attachment`, named after the artifact's title.
+ */
+export function artifactDownloadUrl(id: string): string {
+  return `/api/corpus/artifacts/${id}/file?download=1`;
+}
+
 /** Replace a Word artifact's blob with an edited .docx (re-extracts + re-embeds). */
 export function updateArtifactDocx(
   id: string,
