@@ -21,15 +21,31 @@ import {
   type Item,
   type TagCount,
 } from '../../lib/artifacts';
+import { useSearch } from '../../lib/search-context';
 
 export default function FreeFormsOverviewPage() {
   const navigate = useNavigate();
+  const { query, clearQuery } = useSearch();
   const [items, setItems] = useState<Item[]>([]);
   const [tags, setTags] = useState<TagCount[]>([]);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Item | null>(null);
+
+  const q = query.trim().toLowerCase();
+  const filteredItems = useMemo(() => {
+    if (!q) return items;
+    return items.filter(
+      (it) =>
+        (it.title && it.title.toLowerCase().includes(q)) ||
+        (it.description && it.description.toLowerCase().includes(q)) ||
+        it.tags.some((t) => t.toLowerCase().includes(q)) ||
+        (it.from && it.from.toLowerCase().includes(q)) ||
+        (it.kind && it.kind.toLowerCase().includes(q)) ||
+        (it.mimeType && it.mimeType.toLowerCase().includes(q)),
+    );
+  }, [items, q]);
 
   // Creation flow state.
   const [picking, setPicking] = useState(false);
@@ -63,13 +79,13 @@ export default function FreeFormsOverviewPage() {
 
   const byType = useMemo(() => {
     const m = new Map<TypeKey, Item[]>();
-    for (const it of items) {
+    for (const it of filteredItems) {
       const arr = m.get(it.typeKey) ?? [];
       arr.push(it);
       m.set(it.typeKey, arr);
     }
     return m;
-  }, [items]);
+  }, [filteredItems]);
 
   const sections = TYPES.filter((t) => (byType.get(t.key)?.length ?? 0) > 0);
 
@@ -123,6 +139,18 @@ export default function FreeFormsOverviewPage() {
         <div className="empty">
           <Icon id="i-spark" />
           <p>No artifacts yet. Generate one inside a notebook, or upload a file.</p>
+        </div>
+      )}
+
+      {!loading && items.length > 0 && filteredItems.length === 0 && !error && (
+        <div className="empty">
+          <Icon id="i-search" />
+          <p>No free forms matching "{query}".</p>
+          {query && (
+            <button className="btn btn-soft" onClick={clearQuery} style={{ marginTop: 8 }}>
+              Clear search
+            </button>
+          )}
         </div>
       )}
 

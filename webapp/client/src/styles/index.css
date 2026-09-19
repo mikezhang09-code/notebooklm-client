@@ -450,6 +450,11 @@ body[data-theme='dark'] {
   background: var(--card);
   border: 1px solid var(--line);
   color: var(--muted);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .search svg {
   width: 16px;
@@ -467,6 +472,28 @@ body[data-theme='dark'] {
 }
 .search input::placeholder {
   color: var(--muted);
+}
+.search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 2px;
+  margin: 0;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 50%;
+  flex: 0 0 auto;
+  transition: color 0.15s, background-color 0.15s;
+}
+.search-clear:hover {
+  color: var(--ink);
+  background: var(--line-soft);
+}
+.search-clear svg {
+  width: 13px;
+  height: 13px;
 }
 
 .icon-btn {

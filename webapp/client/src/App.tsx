@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { hasSession } from './lib/session-store';
+import { SearchProvider } from './lib/search-context';
 import { IconSprite } from './components/Icon';
 import { ToastHost } from './lib/toast';
 import SessionGate from './components/SessionGate';
@@ -18,7 +19,7 @@ export default function App() {
   const [authed, setAuthed] = useState<boolean>(hasSession());
 
   return (
-    <>
+    <SearchProvider>
       <IconSprite />
       <ToastHost />
       {!authed ? (
@@ -40,6 +41,6 @@ export default function App() {
           </Route>
         </Routes>
       )}
-    </>
+    </SearchProvider>
   );
 }

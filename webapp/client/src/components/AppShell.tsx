@@ -5,13 +5,14 @@
  * The rail collapses to an icon-only strip (toggle in its header, preference
  * persisted); collapsed nav items fall back to native tooltips for their names.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
 import { TYPES } from '../lib/registry';
 import { useTheme } from '../lib/theme';
 import { apiGet } from '../lib/api';
 import { clearSession } from '../lib/session-store';
+import { useSearch } from '../lib/search-context';
 
 interface Crumb {
   label: string;
@@ -27,6 +28,31 @@ function useRailCollapsed(): [boolean, () => void] {
     localStorage.setItem(RAIL_KEY, collapsed ? '1' : '0');
   }, [collapsed]);
   return [collapsed, () => setCollapsed((c) => !c)];
+}
+
+function useSearchPlaceholder(): string {
+  const { pathname } = useLocation();
+  if (pathname.startsWith('/notebooklm/') && pathname !== '/notebooklm') {
+    return 'Search artifacts & sources…';
+  }
+  if (pathname.startsWith('/notebooklm')) {
+    return 'Search notebooks…';
+  }
+  if (pathname.startsWith('/collections/') && pathname !== '/collections') {
+    return 'Search collection files…';
+  }
+  if (pathname.startsWith('/collections')) {
+    return 'Search collections…';
+  }
+  if (pathname.startsWith('/free-forms/')) {
+    const typeKey = pathname.split('/')[2];
+    const t = TYPES.find((x) => x.key === typeKey);
+    return t ? `Search ${t.plural.toLowerCase()}…` : 'Search free forms…';
+  }
+  if (pathname.startsWith('/free-forms')) {
+    return 'Search free forms…';
+  }
+  return 'Search…';
 }
 
 /** Build breadcrumbs from the current path. Last crumb is bold (non-link). */
@@ -69,9 +95,23 @@ function useCrumbs(): Crumb[] {
 export default function AppShell() {
   const [theme, toggleTheme] = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
   const crumbs = useCrumbs();
   const [nbCount, setNbCount] = useState<number | null>(null);
   const [collapsed, toggleRail] = useRailCollapsed();
+  const { query, setQuery, clearQuery } = useSearch();
+  const placeholder = useSearchPlaceholder();
+
+  // Clear query when switching top-level sections (e.g. NotebookLM <-> Collections <-> Free Forms)
+  const section = location.pathname.split('/')[1] || '';
+  const prevSectionRef = useRef(section);
+  useEffect(() => {
+    if (prevSectionRef.current !== section) {
+      clearQuery();
+      prevSectionRef.current = section;
+    }
+  }, [section, clearQuery]);
+
   /** Nav labels only survive as tooltips once the rail is icon-only. */
   const tip = (label: string) => (collapsed ? label : undefined);
 
@@ -243,7 +283,26 @@ export default function AppShell() {
           <div className="spacer" />
           <div className="search">
             <Icon id="i-search" />
-            <input placeholder="Search…" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') clearQuery();
+              }}
+              placeholder={placeholder}
+              aria-label="Search"
+            />
+            {query && (
+              <button
+                type="button"
+                className="search-clear"
+                onClick={clearQuery}
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <Icon id="i-close" />
+              </button>
+            )}
           </div>
           <button
             className="icon-btn"
@@ -251,7 +310,7 @@ export default function AppShell() {
             onClick={() => {
               if (confirm('Clear the saved session from this browser?')) {
                 clearSession();
-                location.reload();
+                window.location.reload();
               }
             }}
           >

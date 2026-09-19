@@ -3,7 +3,7 @@
  * via POST /api/corpus/ingest?collectionId). Generate-from-collection is wired
  * in a later phase.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
 import CorpusChat from '../../components/CorpusChat';
@@ -29,6 +29,7 @@ import {
 } from '../../lib/collections';
 import type { Item } from '../../lib/artifacts';
 import { toast } from '../../lib/toast';
+import { useSearch } from '../../lib/search-context';
 
 function fmtSize(bytes: number | null): string {
   if (!bytes) return '—';
@@ -40,9 +41,23 @@ function fmtSize(bytes: number | null): string {
 export default function CollectionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { query, clearQuery } = useSearch();
   const [col, setCol] = useState<CollectionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const q = query.trim().toLowerCase();
+  const filteredFiles = useMemo(() => {
+    if (!col?.files) return [];
+    if (!q) return col.files;
+    return col.files.filter(
+      (f) =>
+        (f.title && f.title.toLowerCase().includes(q)) ||
+        (f.kind && f.kind.toLowerCase().includes(q)) ||
+        (f.mimeType && f.mimeType.toLowerCase().includes(q)) ||
+        (f.id && f.id.toLowerCase().includes(q)),
+    );
+  }, [col?.files, q]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [open, setOpen] = useState<Item | null>(null);
   const [noteEditing, setNoteEditing] = useState(false);
@@ -180,9 +195,21 @@ export default function CollectionDetailPage() {
         </div>
       )}
 
-      {tab === 'files' && col && col.files.length > 0 && (
+      {tab === 'files' && col && col.files.length > 0 && filteredFiles.length === 0 && (
+        <div className="empty">
+          <Icon id="i-search" />
+          <p>No files matching "{query}".</p>
+          {query && (
+            <button className="btn btn-soft" onClick={clearQuery} style={{ marginTop: 8 }}>
+              Clear search
+            </button>
+          )}
+        </div>
+      )}
+
+      {tab === 'files' && col && filteredFiles.length > 0 && (
         <div className="files">
-          {col.files.map((f) => {
+          {filteredFiles.map((f) => {
             const face = describe(f.kind, f.mimeType, f.title);
             return (
               <div

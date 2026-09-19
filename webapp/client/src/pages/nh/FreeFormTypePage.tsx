@@ -18,6 +18,7 @@ import MindmapEditor from '../../components/MindmapEditor';
 import DiagramEditor from '../../components/DiagramEditor';
 import { TYPE, SOURCES, describe, faceText, type TypeKey } from '../../lib/registry';
 import { listItems, fetchNotebookMap, resolveFrom, type Item, type Provenance } from '../../lib/artifacts';
+import { useSearch } from '../../lib/search-context';
 
 type Filter = 'all' | Provenance;
 const FILTERS: { key: Filter; label: string; dot?: string }[] = [
@@ -39,6 +40,7 @@ export default function FreeFormTypePage() {
   const typeKey = (type ?? 'audio') as TypeKey;
   const t = TYPE[typeKey] ?? TYPE.report;
 
+  const { query, clearQuery } = useSearch();
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -94,11 +96,21 @@ export default function FreeFormTypePage() {
     return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }, [items]);
 
-  const rows = items.filter(
-    (it) =>
-      (filter === 'all' || it.provenance === filter) &&
-      (activeTag === null || it.tags.includes(activeTag)),
-  );
+  const q = query.trim().toLowerCase();
+  const rows = useMemo(() => {
+    return items.filter(
+      (it) =>
+        (filter === 'all' || it.provenance === filter) &&
+        (activeTag === null || it.tags.includes(activeTag)) &&
+        (!q ||
+          (it.title && it.title.toLowerCase().includes(q)) ||
+          (it.description && it.description.toLowerCase().includes(q)) ||
+          it.tags.some((tg) => tg.toLowerCase().includes(q)) ||
+          (it.from && it.from.toLowerCase().includes(q)) ||
+          (it.kind && it.kind.toLowerCase().includes(q)) ||
+          (it.mimeType && it.mimeType.toLowerCase().includes(q))),
+    );
+  }, [items, filter, activeTag, q]);
   // Distinct backend kinds backing this display type (e.g. data-table + data_table).
   const kinds = useMemo(() => [...new Set(items.map((it) => it.kind))], [items]);
 
@@ -187,7 +199,16 @@ export default function FreeFormTypePage() {
         (!loading && rows.length === 0 ? (
         <div className="empty">
           <Icon id={t.icon} />
-          <p>No {t.plural.toLowerCase()} yet.</p>
+          <p>
+            {q
+              ? `No ${t.plural.toLowerCase()} matching "${query}".`
+              : `No ${t.plural.toLowerCase()} yet.`}
+          </p>
+          {q && (
+            <button className="btn btn-soft" onClick={clearQuery} style={{ marginTop: 8 }}>
+              Clear search
+            </button>
+          )}
         </div>
       ) : (
         <div className="ff-table">

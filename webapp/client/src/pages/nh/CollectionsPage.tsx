@@ -2,7 +2,7 @@
  * Library · Collections — browse user-created collections of uploaded research.
  * Wired to GET/POST /api/corpus/collections.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/Icon';
 import { TYPE, TYPES, type TypeKey } from '../../lib/registry';
@@ -14,6 +14,7 @@ import {
   type CollectionSummary,
 } from '../../lib/collections';
 import { toast } from '../../lib/toast';
+import { useSearch } from '../../lib/search-context';
 
 function colorFor(id: string): string {
   let h = 0;
@@ -23,10 +24,23 @@ function colorFor(id: string): string {
 
 export default function CollectionsPage() {
   const navigate = useNavigate();
+  const { query, clearQuery } = useSearch();
   const [cols, setCols] = useState<CollectionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  const q = query.trim().toLowerCase();
+  const filteredCols = useMemo(() => {
+    if (!q) return cols;
+    return cols.filter(
+      (c) =>
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.description && c.description.toLowerCase().includes(q)) ||
+        c.tags.some((t) => t.toLowerCase().includes(q)) ||
+        (c.id && c.id.toLowerCase().includes(q)),
+    );
+  }, [cols, q]);
 
   async function reload() {
     setLoading(true);
@@ -69,14 +83,35 @@ export default function CollectionsPage() {
         </div>
       </div>
 
+      <div className="sec-bar">
+        <h2 className="sec-h">
+          Your collections
+          {cols.length
+            ? ` · ${filteredCols.length}${filteredCols.length !== cols.length ? ` of ${cols.length}` : ''}`
+            : ''}
+        </h2>
+      </div>
+
       {error && (
         <div className="empty" style={{ color: 'var(--accent)' }}>
           {error}
         </div>
       )}
 
+      {filteredCols.length === 0 && !loading && !error && (
+        <div className="empty">
+          <Icon id="i-search" />
+          <p>{cols.length === 0 ? 'No collections yet.' : `No collections matching "${query}".`}</p>
+          {query && (
+            <button className="btn btn-soft" onClick={clearQuery} style={{ marginTop: 8 }}>
+              Clear search
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="grid">
-        {cols.map((c) => {
+        {filteredCols.map((c) => {
           const tc = colorFor(c.id);
           const minis = Object.entries(c.breakdown).slice(0, 6);
           return (
@@ -123,7 +158,7 @@ export default function CollectionsPage() {
           );
         })}
 
-        {!loading && (
+        {!loading && !q && (
           <button className="new-tile" onClick={() => setCreating(true)}>
             <span className="plus">
               <Icon id="i-plus" />

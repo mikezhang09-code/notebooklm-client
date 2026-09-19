@@ -3,12 +3,13 @@
  * Wired to the real GET /api/notebooks. Cards take an editorial accent color
  * derived from the notebook id (the live API doesn't categorize notebooks).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiDelete, apiGet } from '../../lib/api';
 import { Icon } from '../../components/Icon';
 import { TYPES } from '../../lib/registry';
 import { toast } from '../../lib/toast';
+import { useSearch } from '../../lib/search-context';
 
 interface NotebookInfo {
   id: string;
@@ -25,10 +26,21 @@ function colorFor(id: string): string {
 
 export default function NotebookLMPage() {
   const navigate = useNavigate();
+  const { query, clearQuery } = useSearch();
   const [notebooks, setNotebooks] = useState<NotebookInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const q = query.trim().toLowerCase();
+  const filteredNotebooks = useMemo(() => {
+    if (!q) return notebooks;
+    return notebooks.filter(
+      (nb) =>
+        (nb.title && nb.title.toLowerCase().includes(q)) ||
+        (nb.id && nb.id.toLowerCase().includes(q)),
+    );
+  }, [notebooks, q]);
 
   async function reload() {
     setLoading(true);
@@ -88,7 +100,10 @@ export default function NotebookLMPage() {
 
       <div className="sec-bar">
         <h2 className="sec-h">
-          Your notebooks{notebooks.length ? ` · ${notebooks.length}` : ''}
+          Your notebooks
+          {notebooks.length
+            ? ` · ${filteredNotebooks.length}${filteredNotebooks.length !== notebooks.length ? ` of ${notebooks.length}` : ''}`
+            : ''}
         </h2>
       </div>
 
@@ -98,8 +113,20 @@ export default function NotebookLMPage() {
         </div>
       )}
 
+      {filteredNotebooks.length === 0 && !loading && !error && (
+        <div className="empty">
+          <Icon id="i-search" />
+          <p>{notebooks.length === 0 ? 'No notebooks yet.' : `No notebooks matching "${query}".`}</p>
+          {query && (
+            <button className="btn btn-soft" onClick={clearQuery} style={{ marginTop: 8 }}>
+              Clear search
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="grid">
-        {notebooks.map((nb) => {
+        {filteredNotebooks.map((nb) => {
           const tc = colorFor(nb.id);
           return (
             <div
@@ -157,7 +184,7 @@ export default function NotebookLMPage() {
           );
         })}
 
-        {!loading && (
+        {!loading && !q && (
           <button
             className="new-tile"
             onClick={() => toast('Create a notebook by generating an artifact from a source')}

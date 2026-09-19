@@ -17,6 +17,7 @@ import {
   type Item,
 } from '../../lib/artifacts';
 import { toast } from '../../lib/toast';
+import { useSearch } from '../../lib/search-context';
 
 interface SourceInfo {
   id: string;
@@ -339,11 +340,34 @@ function ArtifactsTab({
     }
   }
 
+  const { query, clearQuery } = useSearch();
+  const q = query.trim().toLowerCase();
+  const filteredArtifacts = useMemo(() => {
+    if (!q) return artifacts;
+    return artifacts.filter(
+      (a) =>
+        (a.title && a.title.toLowerCase().includes(q)) ||
+        (a.typeLabel && a.typeLabel.toLowerCase().includes(q)) ||
+        (savedMap.get(a.id)?.description &&
+          savedMap.get(a.id)!.description!.toLowerCase().includes(q)),
+    );
+  }, [artifacts, q, savedMap]);
+
   return (
     <>
-      {artifacts.length > 0 && (
+      {artifacts.length > 0 && filteredArtifacts.length === 0 && q && (
+        <div className="empty" style={{ marginBottom: 24 }}>
+          <Icon id="i-search" />
+          <p>No artifacts matching "{query}".</p>
+          <button className="btn btn-soft" onClick={clearQuery} style={{ marginTop: 8 }}>
+            Clear search
+          </button>
+        </div>
+      )}
+
+      {filteredArtifacts.length > 0 && (
         <div className="item-grid" style={{ marginBottom: 24 }}>
-          {artifacts.map((a) => {
+          {filteredArtifacts.map((a) => {
             const t = TYPE[artifactTypeKey(a)];
             const saved = savedMap.get(a.id);
             const isSaved = !!saved || savedPending.has(a.id);
@@ -474,14 +498,21 @@ function SourcesTab({
   sources: SourceInfo[];
   onChanged: () => void;
 }) {
+  const { query: topQuery } = useSearch();
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const activeQuery = (topQuery || query).trim().toLowerCase();
   const filtered = useMemo(
-    () => sources.filter((s) => s.title.toLowerCase().includes(query.toLowerCase())),
-    [sources, query],
+    () =>
+      sources.filter(
+        (s) =>
+          (s.title && s.title.toLowerCase().includes(activeQuery)) ||
+          (s.url && s.url.toLowerCase().includes(activeQuery)),
+      ),
+    [sources, activeQuery],
   );
 
   async function removeSelected() {
@@ -507,7 +538,11 @@ function SourcesTab({
       <div className="src-toolbar">
         <div className="search" style={{ width: 300 }}>
           <Icon id="i-search" />
-          <input placeholder="Filter sources…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input
+            placeholder="Filter sources…"
+            value={topQuery || query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
         </div>
         {selected.size > 0 && <span className="src-tool-count">{selected.size} selected</span>}
         <div style={{ flex: 1 }} />
