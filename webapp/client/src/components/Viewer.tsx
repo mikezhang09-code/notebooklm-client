@@ -36,6 +36,10 @@ interface Heading {
   level: number;
 }
 
+function headingNodes(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'));
+}
+
 function slugify(text: string, i: number): string {
   const base = text
     .toLowerCase()
@@ -61,6 +65,8 @@ export default function Viewer({
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [outlineQuery, setOutlineQuery] = useState('');
+  // Heading the reader is currently in — highlighted in the outline.
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(15);
   const [expanded, setExpanded] = useState(false);
   // Word artifacts can flip between the rendered preview and the live editor.
@@ -70,6 +76,11 @@ export default function Viewer({
   // Set when an <audio>/<video> element can't decode the file (unsupported codec).
   const [mediaError, setMediaError] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // The element that actually scrolls (the pane around the rendered body).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const outlineRef = useRef<HTMLElement>(null);
+  // Cancels the re-snap loop of an in-flight outline jump.
+  const jumpRef = useRef<(() => void) | null>(null);
 
   function loadView() {
     getView(id)
@@ -93,30 +104,136 @@ export default function Viewer({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // After HTML/Markdown content renders, extract headings → outline (and tag them with ids).
+  // After HTML/Markdown content renders, extract headings → outline. Headings
+  // are addressed by position, not DOM id: MarkdownView may re-inject its HTML
+  // (e.g. StrictMode re-running its effect), which would wipe any ids set here.
   useEffect(() => {
     if ((view?.type !== 'html' && view?.type !== 'markdown') || !bodyRef.current) {
       setHeadings([]);
       return;
     }
-    const nodes = Array.from(
-      bodyRef.current.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6'),
-    );
-    const list: Heading[] = nodes.map((node, i) => {
-      const text = node.textContent?.trim() ?? `Section ${i + 1}`;
-      if (!node.id) node.id = slugify(text, i);
-      return { id: node.id, text, level: Number(node.tagName[1]) };
+    const list: Heading[] = headingNodes(bodyRef.current).map((node, i) => {
+      const text = node.textContent?.trim() || `Section ${i + 1}`;
+      return { id: slugify(text, i), text, level: Number(node.tagName[1]) };
     });
     setHeadings(list);
     setOutlineOpen(list.length > 1);
     setOutlineQuery('');
   }, [view]);
 
+  /** The live heading element for an outline entry (looked up at call time). */
+  function headingEl(hid: string): HTMLElement | null {
+    const i = headings.findIndex((h) => h.id === hid);
+    if (i < 0 || !bodyRef.current) return null;
+    return headingNodes(bodyRef.current)[i] ?? null;
+  }
+
+  // Scroll-spy: the active heading is the last one whose top has passed a line
+  // just below the top of the scroll pane.
+  useEffect(() => {
+    const pane = scrollRef.current;
+    if (!pane || headings.length === 0) {
+      setActiveId(null);
+      return;
+    }
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const line = pane.getBoundingClientRect().top + 24;
+      const nodes = bodyRef.current ? headingNodes(bodyRef.current) : [];
+      let current: string | null = headings[0].id;
+      for (let i = 0; i < headings.length; i++) {
+        const el = nodes[i];
+        if (!el) break;
+        if (el.getBoundingClientRect().top <= line) current = headings[i].id;
+        else break;
+      }
+      // At the very bottom, the last headings may never reach the line.
+      if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 2) {
+        const last = headings[headings.length - 1];
+        const el = nodes[headings.length - 1];
+        if (el && el.getBoundingClientRect().top < pane.getBoundingClientRect().bottom) current = last.id;
+      }
+      setActiveId(current);
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    update();
+    pane.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      pane.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [headings, fontSize]);
+
+  // Keep the active outline entry visible when the outline is long.
+  useEffect(() => {
+    if (!activeId || !outlineRef.current) return;
+    const link = outlineRef.current.querySelector<HTMLElement>(`[data-hid="${CSS.escape(activeId)}"]`);
+    link?.scrollIntoView({ block: 'nearest' });
+  }, [activeId, outlineOpen]);
+
+  useEffect(() => () => jumpRef.current?.(), []);
+
+  /**
+   * Jump to a heading. Scrolls the pane itself (not scrollIntoView, which also
+   * nudges the modal and is cancelled by layout changes), then keeps the
+   * heading pinned for a moment while Mermaid/KaTeX/images finish rendering
+   * and shift the content above it.
+   */
   function scrollTo(hid: string) {
-    bodyRef.current?.querySelector(`#${CSS.escape(hid)}`)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
+    const pane = scrollRef.current;
+    const el = headingEl(hid);
+    if (!pane || !el) return;
+    jumpRef.current?.();
+
+    const targetTop = () =>
+      Math.max(
+        0,
+        Math.min(
+          pane.scrollTop + el.getBoundingClientRect().top - pane.getBoundingClientRect().top - 12,
+          pane.scrollHeight - pane.clientHeight,
+        ),
+      );
+
+    pane.scrollTo({ top: targetTop(), behavior: 'smooth' });
+    setActiveId(hid);
+
+    // Re-snap if layout shifts while (or shortly after) the smooth scroll runs.
+    // Stop as soon as the user scrolls on their own.
+    let stopped = false;
+    const started = performance.now();
+    let lastTarget = targetTop();
+    let raf = requestAnimationFrame(function tick() {
+      if (stopped) return;
+      const t = targetTop();
+      if (Math.abs(t - lastTarget) > 1) {
+        pane.scrollTo({ top: t });
+        lastTarget = t;
+      }
+      if (performance.now() - started < 1500) raf = requestAnimationFrame(tick);
+      else stop();
     });
+    const userScroll = () => stop();
+    function stop() {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      pane!.removeEventListener('wheel', userScroll);
+      pane!.removeEventListener('touchstart', userScroll);
+      pane!.removeEventListener('keydown', userScroll);
+      if (jumpRef.current === stop) jumpRef.current = null;
+    }
+    pane.addEventListener('wheel', userScroll, { passive: true });
+    pane.addEventListener('touchstart', userScroll, { passive: true });
+    pane.addEventListener('keydown', userScroll);
+    jumpRef.current = stop;
+
+    // Briefly highlight the heading so the eye lands on the exact spot.
+    el.classList.remove('md-target-flash');
+    void el.offsetWidth; // restart the animation on repeat clicks
+    el.classList.add('md-target-flash');
+    window.setTimeout(() => el.classList.remove('md-target-flash'), 1600);
   }
 
   const isDocx = view?.mimeType === DOCX_MIME;
@@ -258,6 +375,7 @@ export default function Viewer({
 
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
           <div
+            ref={scrollRef}
             style={{
               flex: 1,
               minWidth: 0,
@@ -383,7 +501,7 @@ export default function Viewer({
           </div>
 
           {hasOutline && outlineOpen && (
-            <aside className="md-outline">
+            <aside className="md-outline" ref={outlineRef}>
               <div className="md-outline-head">
                 <b>Outline</b>
                 <button className="icon-btn" title="Close outline" onClick={() => setOutlineOpen(false)}>
@@ -405,7 +523,9 @@ export default function Viewer({
               {filteredHeadings.map((h) => (
                 <a
                   key={h.id}
-                  className={`lvl-${h.level}`}
+                  data-hid={h.id}
+                  className={`lvl-${h.level}${h.id === activeId ? ' active' : ''}`}
+                  aria-current={h.id === activeId ? 'location' : undefined}
                   style={{ paddingLeft: 8 + Math.max(0, h.level - minLevel) * 14 }}
                   onClick={() => scrollTo(h.id)}
                 >

@@ -3451,6 +3451,25 @@ body[data-theme='dark'] .pick-tile .g-ic {
   font-weight: 600;
   color: var(--ink);
 }
+.md-outline a.active {
+  background: var(--card-2);
+  color: var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* Flash on the heading an outline click jumped to. */
+.md-body .md-target-flash {
+  animation: md-target-flash 1.6s ease-out;
+  border-radius: 4px;
+}
+@keyframes md-target-flash {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
 .md-outline-filter {
   width: 100%;
   margin: 0 0 8px;
