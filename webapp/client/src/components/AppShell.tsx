@@ -102,15 +102,17 @@ export default function AppShell() {
   const { query, setQuery, clearQuery } = useSearch();
   const placeholder = useSearchPlaceholder();
 
-  // Clear query when switching top-level sections (e.g. NotebookLM <-> Collections <-> Free Forms)
-  const section = location.pathname.split('/')[1] || '';
-  const prevSectionRef = useRef(section);
+  // Each page's search is scoped to that page (see the placeholder), so clear
+  // it on any navigation — including list → detail within one section, where a
+  // leftover "midea" from finding a collection would otherwise filter its files.
+  const pathname = location.pathname;
+  const prevPathRef = useRef(pathname);
   useEffect(() => {
-    if (prevSectionRef.current !== section) {
+    if (prevPathRef.current !== pathname) {
       clearQuery();
-      prevSectionRef.current = section;
+      prevPathRef.current = pathname;
     }
-  }, [section, clearQuery]);
+  }, [pathname, clearQuery]);
 
   /** Nav labels only survive as tooltips once the rail is icon-only. */
   const tip = (label: string) => (collapsed ? label : undefined);
