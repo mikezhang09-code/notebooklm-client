@@ -45,7 +45,7 @@ export type { TransportTier, TransportFactoryOptions } from './transport-resolve
 export { getHomeDir, setHomeDir, getSessionPath, getProfileDir, getRpcIdsPath } from './paths.js';
 
 // Session persistence
-export { saveSession, loadSession, hasValidSession, refreshTokens } from './session-store.js';
+export { saveSession, loadSession, hasValidSession, refreshTokens, rotateCookies } from './session-store.js';
 
 // TLS config
 export { CHROME_CIPHERS, CHROME_SIGALGS, chromeTlsOptions } from './tls-config.js';

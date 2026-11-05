@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { NotebookRpcSession } from '../src/types.js';
@@ -232,11 +233,13 @@ describe('session-store', () => {
       );
 
       expect(refreshed.at).toBe('token-proxy');
-      expect(calls).toHaveLength(1);
-      const args = calls[0]!.args;
-      const xIdx = args.indexOf('-x');
-      expect(xIdx).toBeGreaterThan(-1);
-      expect(args[xIdx + 1]).toBe('http://127.0.0.1:7890');
+      // RotateCookies POST, then the dashboard GET — both through the proxy.
+      expect(calls).toHaveLength(2);
+      for (const { args } of calls) {
+        const xIdx = args.indexOf('-x');
+        expect(xIdx).toBeGreaterThan(-1);
+        expect(args[xIdx + 1]).toBe('http://127.0.0.1:7890');
+      }
     });
 
     it('should not pass -x to curl when no proxy', async () => {
@@ -245,8 +248,50 @@ describe('session-store', () => {
 
       await refreshTokens(makeSession(), join(tmpDir, 'noproxy.json'));
 
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.args).not.toContain('-x');
+      expect(calls).toHaveLength(2);
+      for (const { args } of calls) expect(args).not.toContain('-x');
+    });
+
+    it('should rotate PSIDTS before fetching tokens and carry the new value through', async () => {
+      const fakeHtml = `"SNlM0e":"token-rot","cfb2h":"boq_labs-tailwind-frontend_20260803.11_p0","FdrFJe":"fsid"`;
+      const cookieFiles: string[] = [];
+      vi.mocked(execFile).mockImplementation(((cmd: string, args: readonly string[], optsOrCb: unknown, cb?: unknown) => {
+        const callback = (typeof optsOrCb === 'function' ? optsOrCb : cb) as ExecFileCallback;
+        cookieFiles.push(readFileSync(args[args.indexOf('-b') + 1]!, 'utf-8'));
+        const out = args.includes('https://accounts.google.com/RotateCookies')
+          ? curlOutput({ status: 200, setCookies: ['__Secure-1PSIDTS=sidts-new; path=/; Secure'], body: '' })
+          : curlOutput({ status: 200, body: fakeHtml });
+        setImmediate(() => callback(null, out, ''));
+        return {} as ReturnType<typeof execFile>;
+      }) as never);
+
+      const session = makeSession({ cookies: 'SID=abc; __Secure-1PSIDTS=sidts-old' });
+      const refreshed = await refreshTokens(session, join(tmpDir, 'rotated.json'));
+
+      expect(cookieFiles).toHaveLength(2);
+      expect(cookieFiles[0]).toContain('sidts-old');
+      expect(cookieFiles[1]).toContain('sidts-new');
+      expect(refreshed.cookies).toContain('__Secure-1PSIDTS=sidts-new');
+      expect(refreshed.cookies).not.toContain('sidts-old');
+    });
+
+    it('should still refresh when RotateCookies is rejected', async () => {
+      const fakeHtml = `"SNlM0e":"token-ok","cfb2h":"boq_labs-tailwind-frontend_20260803.11_p0","FdrFJe":"fsid"`;
+      vi.mocked(execFile).mockImplementation(((cmd: string, args: readonly string[], optsOrCb: unknown, cb?: unknown) => {
+        const callback = (typeof optsOrCb === 'function' ? optsOrCb : cb) as ExecFileCallback;
+        const out = args.includes('https://accounts.google.com/RotateCookies')
+          ? curlOutput({ status: 401, setCookies: ['NID=x; path=/'], body: '' })
+          : curlOutput({ status: 200, body: fakeHtml });
+        setImmediate(() => callback(null, out, ''));
+        return {} as ReturnType<typeof execFile>;
+      }) as never);
+
+      const session = makeSession({ cookies: 'SID=abc; __Secure-1PSIDTS=sidts-old' });
+      const refreshed = await refreshTokens(session, join(tmpDir, 'rot-401.json'));
+
+      expect(refreshed.at).toBe('token-ok');
+      expect(refreshed.cookies).toContain('__Secure-1PSIDTS=sidts-old');
+      expect(refreshed.cookies).not.toContain('NID=');
     });
 
     it('should merge Set-Cookie headers with existing cookies', async () => {

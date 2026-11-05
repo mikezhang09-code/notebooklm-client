@@ -152,6 +152,95 @@ export async function hasValidSession(
   }
 }
 
+/** Write the session's cookies to a Netscape-format temp file for curl `-b`. */
+function writeCookieFile(session: NotebookRpcSession, tag: string): string {
+  const cookieFilePath = join(tmpdir(), `.nblm-${tag}-cookies-${process.pid}-${Date.now()}`);
+  const cookieLines = ['# Netscape HTTP Cookie File'];
+  if (session.cookieJar && session.cookieJar.length > 0) {
+    for (const c of session.cookieJar) {
+      const domainFlag = c.domain.startsWith('.') ? 'TRUE' : 'FALSE';
+      const secure = c.secure ? 'TRUE' : 'FALSE';
+      cookieLines.push(`${c.domain}\t${domainFlag}\t${c.path ?? '/'}\t${secure}\t0\t${c.name}\t${c.value}`);
+    }
+  } else {
+    for (const pair of session.cookies.split(';')) {
+      const eq = pair.indexOf('=');
+      if (eq <= 0) continue;
+      const name = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1).trim();
+      const secure = name.startsWith('__Secure') || name.startsWith('__Host') ? 'TRUE' : 'FALSE';
+      cookieLines.push(`.google.com\tTRUE\t/\t${secure}\t0\t${name}\t${value}`);
+    }
+  }
+  writeFileSync(cookieFilePath, cookieLines.join('\n'), 'utf-8');
+  return cookieFilePath;
+}
+
+const ROTATE_COOKIES_URL = 'https://accounts.google.com/RotateCookies';
+// The unbound request body Chrome sends when it has no DBSC binding to attest.
+const ROTATE_COOKIES_BODY = '[000,"-0000000000000000000"]';
+
+/**
+ * Ask Google to rotate the short-lived `__Secure-1PSIDTS` / `__Secure-3PSIDTS`
+ * cookies, the freshness partners of `__Secure-1PSID`. Their server-side
+ * validity is minutes-to-hours; Chrome keeps them alive by POSTing here about
+ * every 10 minutes, but RPC traffic never triggers a rotation. Without this a
+ * saved session silently stales out and later surfaces as UNAUTHENTICATED
+ * (code 16) once the token refresh can no longer sign in.
+ *
+ * Best-effort: on any failure the session is returned unchanged.
+ */
+export async function rotateCookies(
+  session: NotebookRpcSession,
+  proxy?: string,
+  binaryPath?: string | null,
+): Promise<NotebookRpcSession> {
+  if (process.env['NOTEBOOKLM_DISABLE_COOKIE_ROTATION'] === '1') return session;
+  const bin = binaryPath ?? (await CurlTransport.findBinary());
+  if (!bin) return session;
+
+  const ua = session.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  const cookieFilePath = writeCookieFile(session, 'rotate');
+  const args: string[] = [
+    '--impersonate', 'chrome136',
+    ROTATE_COOKIES_URL,
+    '-s', '-S',
+    '-X', 'POST',
+    '-D', '-',
+    '-o', '/dev/null',
+    '-b', cookieFilePath,
+    '-H', `User-Agent: ${ua}`,
+    '-H', 'Content-Type: application/json',
+    '-H', 'Origin: https://accounts.google.com',
+    '--data-raw', ROTATE_COOKIES_BODY,
+  ];
+  if (proxy) args.push('-x', proxy);
+
+  try {
+    const { stdout } = await execFileAsync(bin, args, { timeout: 15_000, maxBuffer: 1024 * 1024 });
+    const status = /^HTTP\/[\d.]+\s+(\d{3})/m.exec(stdout)?.[1];
+    const setCookies: string[] = [];
+    for (const line of stdout.split(/\r?\n/)) {
+      const m = /^set-cookie:\s*(.*)$/i.exec(line);
+      if (m) setCookies.push(m[1]!);
+    }
+    if (process.env['NOTEBOOKLM_DEBUG']) {
+      const names = setCookies.map((c) => c.split('=')[0]).join(', ');
+      console.error(`NotebookLM: RotateCookies HTTP ${status ?? '?'}; set: ${names || '(none)'}`);
+    }
+    if (status !== '200' || setCookies.length === 0) return session;
+    const cookies = mergeCookies(session.cookies, setCookies);
+    return { ...session, cookies, cookieJar: mergeCookieJar(session.cookieJar, cookies) };
+  } catch (err) {
+    if (process.env['NOTEBOOKLM_DEBUG']) {
+      console.error(`NotebookLM: RotateCookies failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return session;
+  } finally {
+    try { unlinkSync(cookieFilePath); } catch { /* ignore */ }
+  }
+}
+
 /**
  * Refresh short-lived tokens (at, bl, fsid) using long-lived cookies.
  *
@@ -177,26 +266,11 @@ export async function refreshTokens(
 
   const ua = session.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-  // Write cookies to Netscape-format temp file — covers both cookieJar and flat string.
-  const cookieFilePath = join(tmpdir(), `.nblm-refresh-cookies-${process.pid}-${Date.now()}`);
-  const cookieLines = ['# Netscape HTTP Cookie File'];
-  if (session.cookieJar && session.cookieJar.length > 0) {
-    for (const c of session.cookieJar) {
-      const domainFlag = c.domain.startsWith('.') ? 'TRUE' : 'FALSE';
-      const secure = c.secure ? 'TRUE' : 'FALSE';
-      cookieLines.push(`${c.domain}\t${domainFlag}\t${c.path ?? '/'}\t${secure}\t0\t${c.name}\t${c.value}`);
-    }
-  } else {
-    for (const pair of session.cookies.split(';')) {
-      const eq = pair.indexOf('=');
-      if (eq <= 0) continue;
-      const name = pair.slice(0, eq).trim();
-      const value = pair.slice(eq + 1).trim();
-      const secure = name.startsWith('__Secure') || name.startsWith('__Host') ? 'TRUE' : 'FALSE';
-      cookieLines.push(`.google.com\tTRUE\t/\t${secure}\t0\t${name}\t${value}`);
-    }
-  }
-  writeFileSync(cookieFilePath, cookieLines.join('\n'), 'utf-8');
+  // Rotate __Secure-1PSIDTS first: the dashboard GET below won't, and a stale
+  // PSIDTS is what eventually turns every refresh into a sign-in redirect.
+  session = await rotateCookies(session, proxy, binaryPath);
+
+  const cookieFilePath = writeCookieFile(session, 'refresh');
 
   const args: string[] = [
     '--impersonate', 'chrome136',

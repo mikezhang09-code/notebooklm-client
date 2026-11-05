@@ -33,6 +33,11 @@ export class BrowserTransport implements Transport {
 
     if (isFirstRun) {
       console.error('NotebookLM: First run — please log in to your Google account.');
+    } else if (/\/trynow|accounts\.google\.com/.test(this.page.url())) {
+      // The saved browser profile's own sign-in has lapsed too.
+      console.error(
+        'NotebookLM: Signed out — click "Sign in" in the browser window and log in (waiting up to 3 minutes).',
+      );
     }
 
     // Wait for user to land on the app (may go through Google login first).

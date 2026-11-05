@@ -13,6 +13,7 @@ import { useTheme } from '../lib/theme';
 import { apiGet } from '../lib/api';
 import { clearSession } from '../lib/session-store';
 import { useSearch } from '../lib/search-context';
+import { useSessionKeepalive } from '../lib/session-keepalive';
 
 interface Crumb {
   label: string;
@@ -99,6 +100,7 @@ export default function AppShell() {
   const crumbs = useCrumbs();
   const [nbCount, setNbCount] = useState<number | null>(null);
   const [collapsed, toggleRail] = useRailCollapsed();
+  useSessionKeepalive();
   const { query, setQuery, clearQuery } = useSearch();
   const placeholder = useSearchPlaceholder();
 
